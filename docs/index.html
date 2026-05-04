@@ -1,0 +1,366 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>News Keyword Relation Graph</title>
+  <style>
+    :root {
+      --bg: #f6f8fb;
+      --ink: #17202a;
+      --muted: #667085;
+      --line: #d7dde8;
+      --panel: #ffffff;
+      --accent: #2563eb;
+      --accent-2: #0f9f7a;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: Segoe UI, Arial, sans-serif;
+      background: var(--bg);
+      color: var(--ink);
+      overflow: hidden;
+    }
+    header {
+      height: 64px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 20px;
+      border-bottom: 1px solid var(--line);
+      background: var(--panel);
+    }
+    h1 {
+      margin: 0;
+      font-size: 18px;
+      font-weight: 700;
+      letter-spacing: 0;
+    }
+    .stats {
+      display: flex;
+      gap: 14px;
+      color: var(--muted);
+      font-size: 13px;
+      white-space: nowrap;
+    }
+    main {
+      height: calc(100vh - 64px);
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 320px;
+    }
+    svg {
+      width: 100%;
+      height: 100%;
+      display: block;
+      background:
+        linear-gradient(90deg, rgba(23, 32, 42, 0.04) 1px, transparent 1px),
+        linear-gradient(rgba(23, 32, 42, 0.04) 1px, transparent 1px);
+      background-size: 36px 36px;
+    }
+    aside {
+      border-left: 1px solid var(--line);
+      background: var(--panel);
+      padding: 18px;
+      overflow: auto;
+    }
+    .hint {
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.5;
+      margin: 0 0 18px;
+    }
+    .details {
+      border-top: 1px solid var(--line);
+      padding-top: 16px;
+      font-size: 14px;
+      line-height: 1.6;
+    }
+    .details h2 {
+      margin: 0 0 8px;
+      font-size: 16px;
+    }
+    .details dl {
+      margin: 0;
+    }
+    .details dt {
+      margin-top: 10px;
+      color: var(--muted);
+      font-size: 12px;
+    }
+    .details dd {
+      margin: 2px 0 0;
+      word-break: break-word;
+    }
+    .edge {
+      stroke: #9aa7bd;
+      stroke-linecap: round;
+    }
+    .node circle {
+      stroke: #ffffff;
+      stroke-width: 2;
+      cursor: grab;
+    }
+    .node text {
+      font-size: 12px;
+      fill: var(--ink);
+      paint-order: stroke;
+      stroke: rgba(246, 248, 251, 0.9);
+      stroke-width: 4px;
+      stroke-linejoin: round;
+      pointer-events: none;
+    }
+    .node.selected circle {
+      stroke: #111827;
+      stroke-width: 3;
+    }
+    @media (max-width: 820px) {
+      main {
+        grid-template-columns: 1fr;
+        grid-template-rows: minmax(0, 1fr) 220px;
+      }
+      aside {
+        border-left: 0;
+        border-top: 1px solid var(--line);
+      }
+      header {
+        align-items: flex-start;
+        flex-direction: column;
+        height: auto;
+        min-height: 78px;
+        gap: 8px;
+        padding: 12px 16px;
+      }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>News Keyword Relation Graph</h1>
+    <div class="stats">
+      <span id="node-count"></span>
+      <span id="edge-count"></span>
+      <span>drag nodes to rearrange</span>
+    </div>
+  </header>
+  <main>
+    <svg id="graph" role="img" aria-label="keyword relation graph"></svg>
+    <aside>
+      <p class="hint">노드를 클릭하면 키워드 weight, 등장 뉴스, 연결 관계를 확인할 수 있습니다. 선이 두꺼울수록 relation_score가 높습니다.</p>
+      <section class="details" id="details">
+        <h2>선택된 키워드 없음</h2>
+        <p class="hint">그래프의 원을 클릭하세요.</p>
+      </section>
+    </aside>
+  </main>
+  <script>
+    const graph = {"nodes": [{"id": "이란은 해협", "label": "이란은 해협", "score": 0.6704, "count": 1, "news_ids": [5854]}, {"id": "세종시장 선거", "label": "세종시장 선거", "score": 0.6085, "count": 1, "news_ids": [5853]}, {"id": "한국거래소는 2026년", "label": "한국거래소는 2026년", "score": 0.5904, "count": 1, "news_ids": [5852]}, {"id": "봉쇄는 합의", "label": "봉쇄는 합의", "score": 0.5751, "count": 1, "news_ids": [5854]}, {"id": "경고에도 이란은", "label": "경고에도 이란은", "score": 0.5731, "count": 1, "news_ids": [5854]}, {"id": "이란 혁명수비대가", "label": "이란 혁명수비대가", "score": 0.5649, "count": 1, "news_ids": [5854]}, {"id": "광주권 그린벨트를", "label": "광주권 그린벨트를", "score": 0.5548, "count": 1, "news_ids": [5851]}, {"id": "대전mbc 주관", "label": "대전mbc 주관", "score": 0.5069, "count": 1, "news_ids": [5853]}, {"id": "대통령의 경고에도", "label": "대통령의 경고에도", "score": 0.4977, "count": 1, "news_ids": [5854]}, {"id": "투자자들은 아이티엠반도체의", "label": "투자자들은 아이티엠반도체의", "score": 0.4945, "count": 1, "news_ids": [5852]}, {"id": "중국 컴퓨터", "label": "중국 컴퓨터", "score": 0.4934, "count": 1, "news_ids": [5855]}, {"id": "국가전략산단으로 지정될", "label": "국가전략산단으로 지정될", "score": 0.4931, "count": 1, "news_ids": [5851]}, {"id": "텔레그램 글자크기", "label": "텔레그램 글자크기", "score": 0.479, "count": 1, "news_ids": [5855]}, {"id": "한국 육상의", "label": "한국 육상의", "score": 0.4774, "count": 1, "news_ids": [5853]}, {"id": "국가표준화관리국이 컴퓨터", "label": "국가표준화관리국이 컴퓨터", "score": 0.4544, "count": 1, "news_ids": [5855]}, {"id": "지능형 커넥티드", "label": "지능형 커넥티드", "score": 0.4481, "count": 1, "news_ids": [5855]}, {"id": "치열한 경쟁", "label": "치열한 경쟁", "score": 0.4409, "count": 1, "news_ids": [5853]}, {"id": "이날 정책", "label": "이날 정책", "score": 0.4232, "count": 1, "news_ids": [5851]}, {"id": "토론회에 이어", "label": "토론회에 이어", "score": 0.4151, "count": 1, "news_ids": [5853]}, {"id": "시장경보제도에 따른", "label": "시장경보제도에 따른", "score": 0.41, "count": 1, "news_ids": [5852]}, {"id": "새로운 차원", "label": "새로운 차원", "score": 0.4031, "count": 1, "news_ids": [5854]}, {"id": "따르면 2026년", "label": "따르면 2026년", "score": 0.3992, "count": 1, "news_ids": [5852]}, {"id": "그린벨트는 1970년대", "label": "그린벨트는 1970년대", "score": 0.3936, "count": 1, "news_ids": [5851]}, {"id": "것이다 한국거래소", "label": "것이다 한국거래소", "score": 0.3862, "count": 1, "news_ids": [5852]}, {"id": "김영수 기자", "label": "김영수 기자", "score": 0.3799, "count": 1, "news_ids": [5851]}, {"id": "bci 반도체", "label": "bci 반도체", "score": 0.3737, "count": 1, "news_ids": [5855]}, {"id": "예비후보는 후보", "label": "예비후보는 후보", "score": 0.3709, "count": 1, "news_ids": [5853]}, {"id": "동기간 종합주가지수의", "label": "동기간 종합주가지수의", "score": 0.3539, "count": 1, "news_ids": [5852]}, {"id": "급등하는 투자유의가", "label": "급등하는 투자유의가", "score": 0.3506, "count": 1, "news_ids": [5852]}, {"id": "양자 토론회에", "label": "양자 토론회에", "score": 0.3489, "count": 1, "news_ids": [5853]}, {"id": "아닌 미래", "label": "아닌 미래", "score": 0.3485, "count": 1, "news_ids": [5851]}, {"id": "중국의 희토류처럼", "label": "중국의 희토류처럼", "score": 0.3478, "count": 1, "news_ids": [5854]}], "edges": [{"source": "경고에도 이란은", "target": "이란은 해협", "score": 0.596156559963981, "evidence_news_ids": [5854]}, {"source": "이란 혁명수비대가", "target": "이란은 해협", "score": 0.5836888296752725, "evidence_news_ids": [5854]}, {"source": "봉쇄는 합의", "target": "이란은 해협", "score": 0.5500859554478279, "evidence_news_ids": [5854]}, {"source": "경고에도 이란은", "target": "이란 혁명수비대가", "score": 0.5499917799902898, "evidence_news_ids": [5854]}, {"source": "대전mbc 주관", "target": "세종시장 선거", "score": 0.5409168727125261, "evidence_news_ids": [5853]}, {"source": "광주권 그린벨트를", "target": "국가전략산단으로 지정될", "score": 0.5392073171355057, "evidence_news_ids": [5851]}, {"source": "것이다 한국거래소", "target": "한국거래소는 2026년", "score": 0.5379218534214577, "evidence_news_ids": [5852]}, {"source": "경고에도 이란은", "target": "대통령의 경고에도", "score": 0.5333281333731357, "evidence_news_ids": [5854]}, {"source": "대전mbc 주관", "target": "한국 육상의", "score": 0.5222454104845705, "evidence_news_ids": [5853]}, {"source": "대통령의 경고에도", "target": "봉쇄는 합의", "score": 0.5216511429687589, "evidence_news_ids": [5854]}, {"source": "따르면 2026년", "target": "한국거래소는 2026년", "score": 0.521549095578747, "evidence_news_ids": [5852]}, {"source": "국가표준화관리국이 컴퓨터", "target": "중국 컴퓨터", "score": 0.513164809188333, "evidence_news_ids": [5855]}, {"source": "국가전략산단으로 지정될", "target": "이날 정책", "score": 0.5094593064764775, "evidence_news_ids": [5851]}, {"source": "세종시장 선거", "target": "한국 육상의", "score": 0.5073638562125955, "evidence_news_ids": [5853]}, {"source": "봉쇄는 합의", "target": "이란 혁명수비대가", "score": 0.5055671910534714, "evidence_news_ids": [5854]}, {"source": "대통령의 경고에도", "target": "이란은 해협", "score": 0.5018131691019824, "evidence_news_ids": [5854]}, {"source": "경고에도 이란은", "target": "봉쇄는 합의", "score": 0.49991715271334836, "evidence_news_ids": [5854]}, {"source": "광주권 그린벨트를", "target": "그린벨트는 1970년대", "score": 0.4989149078452153, "evidence_news_ids": [5851]}, {"source": "세종시장 선거", "target": "예비후보는 후보", "score": 0.4977128988898073, "evidence_news_ids": [5853]}, {"source": "광주권 그린벨트를", "target": "김영수 기자", "score": 0.49411107444870683, "evidence_news_ids": [5851]}, {"source": "대통령의 경고에도", "target": "이란 혁명수비대가", "score": 0.4897298604107978, "evidence_news_ids": [5854]}, {"source": "봉쇄는 합의", "target": "새로운 차원", "score": 0.48918897756136837, "evidence_news_ids": [5854]}, {"source": "세종시장 선거", "target": "토론회에 이어", "score": 0.484896751003677, "evidence_news_ids": [5853]}, {"source": "시장경보제도에 따른", "target": "한국거래소는 2026년", "score": 0.4837007342243146, "evidence_news_ids": [5852]}, {"source": "광주권 그린벨트를", "target": "이날 정책", "score": 0.4785923829441774, "evidence_news_ids": [5851]}, {"source": "세종시장 선거", "target": "치열한 경쟁", "score": 0.47799696881168907, "evidence_news_ids": [5853]}, {"source": "급등하는 투자유의가", "target": "투자자들은 아이티엠반도체의", "score": 0.4771571897904381, "evidence_news_ids": [5852]}, {"source": "국가표준화관리국이 컴퓨터", "target": "지능형 커넥티드", "score": 0.47173735502469905, "evidence_news_ids": [5855]}, {"source": "이란은 해협", "target": "중국의 희토류처럼", "score": 0.46952520523611974, "evidence_news_ids": [5854]}, {"source": "봉쇄는 합의", "target": "중국의 희토류처럼", "score": 0.46923878147864295, "evidence_news_ids": [5854]}, {"source": "국가표준화관리국이 컴퓨터", "target": "텔레그램 글자크기", "score": 0.46906481995105476, "evidence_news_ids": [5855]}, {"source": "예비후보는 후보", "target": "치열한 경쟁", "score": 0.4675337676680319, "evidence_news_ids": [5853]}, {"source": "급등하는 투자유의가", "target": "시장경보제도에 따른", "score": 0.4674765972150373, "evidence_news_ids": [5852]}, {"source": "대전mbc 주관", "target": "양자 토론회에", "score": 0.4648155345118701, "evidence_news_ids": [5853]}, {"source": "예비후보는 후보", "target": "토론회에 이어", "score": 0.4636845015898904, "evidence_news_ids": [5853]}, {"source": "시장경보제도에 따른", "target": "투자자들은 아이티엠반도체의", "score": 0.4633241708357282, "evidence_news_ids": [5852]}, {"source": "국가전략산단으로 지정될", "target": "김영수 기자", "score": 0.46029047326524875, "evidence_news_ids": [5851]}, {"source": "bci 반도체", "target": "국가표준화관리국이 컴퓨터", "score": 0.4602159980367615, "evidence_news_ids": [5855]}, {"source": "것이다 한국거래소", "target": "시장경보제도에 따른", "score": 0.45764153636893035, "evidence_news_ids": [5852]}, {"source": "대전mbc 주관", "target": "치열한 경쟁", "score": 0.45625911838303923, "evidence_news_ids": [5853]}, {"source": "새로운 차원", "target": "이란 혁명수비대가", "score": 0.4557359320997838, "evidence_news_ids": [5854]}, {"source": "치열한 경쟁", "target": "한국 육상의", "score": 0.4549443031173924, "evidence_news_ids": [5853]}, {"source": "지능형 커넥티드", "target": "텔레그램 글자크기", "score": 0.4528026572194732, "evidence_news_ids": [5855]}, {"source": "bci 반도체", "target": "중국 컴퓨터", "score": 0.4515962813993347, "evidence_news_ids": [5855]}, {"source": "양자 토론회에", "target": "토론회에 이어", "score": 0.45120336728664145, "evidence_news_ids": [5853]}, {"source": "치열한 경쟁", "target": "토론회에 이어", "score": 0.4503660976475359, "evidence_news_ids": [5853]}, {"source": "동기간 종합주가지수의", "target": "한국거래소는 2026년", "score": 0.4484326244002914, "evidence_news_ids": [5852]}, {"source": "이란 혁명수비대가", "target": "중국의 희토류처럼", "score": 0.44729185137315275, "evidence_news_ids": [5854]}, {"source": "대전mbc 주관", "target": "토론회에 이어", "score": 0.44704904959873004, "evidence_news_ids": [5853]}, {"source": "세종시장 선거", "target": "양자 토론회에", "score": 0.44670080037625925, "evidence_news_ids": [5853]}, {"source": "동기간 종합주가지수의", "target": "따르면 2026년", "score": 0.4466604459181317, "evidence_news_ids": [5852]}, {"source": "투자자들은 아이티엠반도체의", "target": "한국거래소는 2026년", "score": 0.44587293758259383, "evidence_news_ids": [5852]}, {"source": "새로운 차원", "target": "이란은 해협", "score": 0.4451606239836722, "evidence_news_ids": [5854]}, {"source": "중국 컴퓨터", "target": "지능형 커넥티드", "score": 0.4447437935667964, "evidence_news_ids": [5855]}, {"source": "대통령의 경고에도", "target": "새로운 차원", "score": 0.4443308404372307, "evidence_news_ids": [5854]}, {"source": "중국 컴퓨터", "target": "텔레그램 글자크기", "score": 0.4434247008245532, "evidence_news_ids": [5855]}, {"source": "경고에도 이란은", "target": "중국의 희토류처럼", "score": 0.4425001076246482, "evidence_news_ids": [5854]}, {"source": "급등하는 투자유의가", "target": "한국거래소는 2026년", "score": 0.4423904350613673, "evidence_news_ids": [5852]}, {"source": "bci 반도체", "target": "지능형 커넥티드", "score": 0.44180353578498777, "evidence_news_ids": [5855]}, {"source": "것이다 한국거래소", "target": "투자자들은 아이티엠반도체의", "score": 0.4392914541054618, "evidence_news_ids": [5852]}, {"source": "bci 반도체", "target": "텔레그램 글자크기", "score": 0.43893862056980515, "evidence_news_ids": [5855]}, {"source": "대전mbc 주관", "target": "예비후보는 후보", "score": 0.4378146391349249, "evidence_news_ids": [5853]}, {"source": "동기간 종합주가지수의", "target": "시장경보제도에 따른", "score": 0.4374729886163651, "evidence_news_ids": [5852]}, {"source": "대통령의 경고에도", "target": "중국의 희토류처럼", "score": 0.4359674328551777, "evidence_news_ids": [5854]}, {"source": "국가전략산단으로 지정될", "target": "아닌 미래", "score": 0.43412936745472197, "evidence_news_ids": [5851]}, {"source": "광주권 그린벨트를", "target": "아닌 미래", "score": 0.4330890685451747, "evidence_news_ids": [5851]}, {"source": "아닌 미래", "target": "이날 정책", "score": 0.42660915298441315, "evidence_news_ids": [5851]}, {"source": "급등하는 투자유의가", "target": "동기간 종합주가지수의", "score": 0.4257679494450958, "evidence_news_ids": [5852]}, {"source": "따르면 2026년", "target": "시장경보제도에 따른", "score": 0.4208707318235949, "evidence_news_ids": [5852]}, {"source": "국가전략산단으로 지정될", "target": "그린벨트는 1970년대", "score": 0.41916051882502503, "evidence_news_ids": [5851]}, {"source": "경고에도 이란은", "target": "새로운 차원", "score": 0.41904161520026617, "evidence_news_ids": [5854]}, {"source": "그린벨트는 1970년대", "target": "이날 정책", "score": 0.4187532485461044, "evidence_news_ids": [5851]}, {"source": "예비후보는 후보", "target": "한국 육상의", "score": 0.41851568253616267, "evidence_news_ids": [5853]}, {"source": "양자 토론회에", "target": "한국 육상의", "score": 0.41334310482956593, "evidence_news_ids": [5853]}, {"source": "급등하는 투자유의가", "target": "따르면 2026년", "score": 0.4125034548837895, "evidence_news_ids": [5852]}, {"source": "토론회에 이어", "target": "한국 육상의", "score": 0.41232493619459887, "evidence_news_ids": [5853]}, {"source": "새로운 차원", "target": "중국의 희토류처럼", "score": 0.41088668664652384, "evidence_news_ids": [5854]}, {"source": "양자 토론회에", "target": "치열한 경쟁", "score": 0.4107218573843795, "evidence_news_ids": [5853]}, {"source": "동기간 종합주가지수의", "target": "투자자들은 아이티엠반도체의", "score": 0.4104802522518648, "evidence_news_ids": [5852]}, {"source": "김영수 기자", "target": "이날 정책", "score": 0.41027223800581536, "evidence_news_ids": [5851]}]};
+    const svg = document.getElementById("graph");
+    const details = document.getElementById("details");
+    document.getElementById("node-count").textContent = `${graph.nodes.length} nodes`;
+    document.getElementById("edge-count").textContent = `${graph.edges.length} edges`;
+
+    const width = () => svg.clientWidth || 900;
+    const height = () => svg.clientHeight || 650;
+    const nodeById = new Map(graph.nodes.map((node) => [node.id, node]));
+    graph.edges = graph.edges.filter((edge) => nodeById.has(edge.source) && nodeById.has(edge.target));
+
+    function initPositions() {
+      const cx = width() / 2;
+      const cy = height() / 2;
+      const radius = Math.min(width(), height()) * 0.34;
+      graph.nodes.forEach((node, index) => {
+        const angle = (Math.PI * 2 * index) / Math.max(1, graph.nodes.length);
+        node.x = cx + Math.cos(angle) * radius;
+        node.y = cy + Math.sin(angle) * radius;
+        node.vx = 0;
+        node.vy = 0;
+      });
+    }
+
+    function nodeRadius(node) {
+      return 12 + node.score * 20 + Math.min(8, node.count * 2);
+    }
+
+    function color(node) {
+      const t = Math.max(0, Math.min(1, node.score));
+      const r = Math.round(37 * (1 - t) + 15 * t);
+      const g = Math.round(99 * (1 - t) + 159 * t);
+      const b = Math.round(235 * (1 - t) + 122 * t);
+      return `rgb(${r}, ${g}, ${b})`;
+    }
+
+    function tick() {
+      const cx = width() / 2;
+      const cy = height() / 2;
+      for (const node of graph.nodes) {
+        node.vx += (cx - node.x) * 0.0008;
+        node.vy += (cy - node.y) * 0.0008;
+      }
+      for (const edge of graph.edges) {
+        const a = nodeById.get(edge.source);
+        const b = nodeById.get(edge.target);
+        const dx = b.x - a.x;
+        const dy = b.y - a.y;
+        const dist = Math.sqrt(dx * dx + dy * dy) || 1;
+        const target = 145 - edge.score * 55;
+        const force = (dist - target) * 0.006;
+        const fx = (dx / dist) * force;
+        const fy = (dy / dist) * force;
+        a.vx += fx;
+        a.vy += fy;
+        b.vx -= fx;
+        b.vy -= fy;
+      }
+      for (let i = 0; i < graph.nodes.length; i++) {
+        for (let j = i + 1; j < graph.nodes.length; j++) {
+          const a = graph.nodes[i];
+          const b = graph.nodes[j];
+          const dx = b.x - a.x;
+          const dy = b.y - a.y;
+          const dist2 = dx * dx + dy * dy || 1;
+          const force = Math.min(1.8, 1200 / dist2);
+          const dist = Math.sqrt(dist2);
+          const fx = (dx / dist) * force;
+          const fy = (dy / dist) * force;
+          a.vx -= fx;
+          a.vy -= fy;
+          b.vx += fx;
+          b.vy += fy;
+        }
+      }
+      for (const node of graph.nodes) {
+        if (!node.dragging) {
+          node.vx *= 0.84;
+          node.vy *= 0.84;
+          node.x += node.vx;
+          node.y += node.vy;
+          const margin = nodeRadius(node) + 10;
+          node.x = Math.max(margin, Math.min(width() - margin, node.x));
+          node.y = Math.max(margin, Math.min(height() - margin, node.y));
+        }
+      }
+    }
+
+    function render() {
+      svg.innerHTML = "";
+      const edgeGroup = document.createElementNS("http://www.w3.org/2000/svg", "g");
+      const nodeGroup = document.createElementNS("http://www.w3.org/2000/svg", "g");
+      svg.append(edgeGroup, nodeGroup);
+
+      for (const edge of graph.edges) {
+        const line = document.createElementNS("http://www.w3.org/2000/svg", "line");
+        line.classList.add("edge");
+        line.dataset.source = edge.source;
+        line.dataset.target = edge.target;
+        line.setAttribute("stroke-width", String(1 + edge.score * 5));
+        line.setAttribute("opacity", String(0.25 + edge.score * 0.6));
+        edgeGroup.appendChild(line);
+      }
+
+      for (const node of graph.nodes) {
+        const group = document.createElementNS("http://www.w3.org/2000/svg", "g");
+        group.classList.add("node");
+        group.dataset.id = node.id;
+        const circle = document.createElementNS("http://www.w3.org/2000/svg", "circle");
+        circle.setAttribute("r", String(nodeRadius(node)));
+        circle.setAttribute("fill", color(node));
+        const text = document.createElementNS("http://www.w3.org/2000/svg", "text");
+        text.setAttribute("text-anchor", "middle");
+        text.setAttribute("dy", String(nodeRadius(node) + 17));
+        text.textContent = node.label.length > 16 ? node.label.slice(0, 15) + "..." : node.label;
+        group.append(circle, text);
+        group.addEventListener("click", () => selectNode(node.id));
+        group.addEventListener("pointerdown", (event) => startDrag(event, node));
+        nodeGroup.appendChild(group);
+      }
+    }
+
+    function updateSvg() {
+      for (const line of svg.querySelectorAll(".edge")) {
+        const a = nodeById.get(line.dataset.source);
+        const b = nodeById.get(line.dataset.target);
+        line.setAttribute("x1", a.x);
+        line.setAttribute("y1", a.y);
+        line.setAttribute("x2", b.x);
+        line.setAttribute("y2", b.y);
+      }
+      for (const group of svg.querySelectorAll(".node")) {
+        const node = nodeById.get(group.dataset.id);
+        group.setAttribute("transform", `translate(${node.x},${node.y})`);
+      }
+    }
+
+    function selectNode(id) {
+      const node = nodeById.get(id);
+      for (const group of svg.querySelectorAll(".node")) {
+        group.classList.toggle("selected", group.dataset.id === id);
+      }
+      const connected = graph.edges
+        .filter((edge) => edge.source === id || edge.target === id)
+        .sort((a, b) => b.score - a.score)
+        .slice(0, 12)
+        .map((edge) => {
+          const otherId = edge.source === id ? edge.target : edge.source;
+          const other = nodeById.get(otherId);
+          return `<dd>${escapeHtml(other.label)} <strong>${edge.score.toFixed(3)}</strong></dd>`;
+        })
+        .join("");
+      details.innerHTML = `
+        <h2>${escapeHtml(node.label)}</h2>
+        <dl>
+          <dt>normalized_word</dt><dd>${escapeHtml(node.id)}</dd>
+          <dt>weight</dt><dd>${node.score.toFixed(3)}</dd>
+          <dt>news_ids</dt><dd>${node.news_ids.join(", ") || "-"}</dd>
+          <dt>relations</dt>${connected || "<dd>-</dd>"}
+        </dl>
+      `;
+    }
+
+    function escapeHtml(value) {
+      return String(value)
+        .replaceAll("&", "&amp;")
+        .replaceAll("<", "&lt;")
+        .replaceAll(">", "&gt;")
+        .replaceAll('"', "&quot;");
+    }
+
+    function startDrag(event, node) {
+      node.dragging = true;
+      event.currentTarget.setPointerCapture(event.pointerId);
+      const move = (moveEvent) => {
+        const rect = svg.getBoundingClientRect();
+        node.x = moveEvent.clientX - rect.left;
+        node.y = moveEvent.clientY - rect.top;
+        node.vx = 0;
+        node.vy = 0;
+        updateSvg();
+      };
+      const up = () => {
+        node.dragging = false;
+        event.currentTarget.removeEventListener("pointermove", move);
+        event.currentTarget.removeEventListener("pointerup", up);
+      };
+      event.currentTarget.addEventListener("pointermove", move);
+      event.currentTarget.addEventListener("pointerup", up);
+    }
+
+    initPositions();
+    render();
+    let steps = 0;
+    function animate() {
+      if (steps < 360) {
+        tick();
+        steps++;
+      }
+      updateSvg();
+      requestAnimationFrame(animate);
+    }
+    animate();
+    window.addEventListener("resize", () => {
+      initPositions();
+      steps = 0;
+    });
+  </script>
+</body>
+</html>
