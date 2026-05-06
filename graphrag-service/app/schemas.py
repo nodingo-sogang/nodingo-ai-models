@@ -236,6 +236,7 @@ class GraphRecommendKeywordInput(BaseModel):
     word: str
     score: float
     summary: str | None = None
+    persona: str | None = None
 
 
 class GraphKeywordRelationInput(BaseModel):
@@ -260,6 +261,7 @@ class GraphNode(BaseModel):
     label: str
     score: float
     summary: str | None = None
+    persona: str | None = None
 
 
 class GraphEdge(BaseModel):
