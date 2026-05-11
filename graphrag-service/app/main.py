@@ -105,6 +105,8 @@ def summarize_recommend_keyword_endpoint(
         request.keyword,
         request.related_news,
         request.related_keywords,
+        persona=request.persona,
+        category=request.category,
     )
     return SummarizeRecommendKeywordResponse(
         user_id=request.user_id,

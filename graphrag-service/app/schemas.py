@@ -1,7 +1,9 @@
+from __future__ import annotations
+
 from datetime import date, datetime
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 
 
 Embedding = list[float]
@@ -10,10 +12,14 @@ Embedding = list[float]
 class NewsInput(BaseModel):
     """News article input sent by the Spring Boot backend."""
 
+    model_config = ConfigDict(populate_by_name=True)
+
     news_id: int
     title: str
-    body: str
+    # body is the standard contract. Spring may send summary/content aliases during integration.
+    body: str = Field(validation_alias=AliasChoices("body", "summary", "content"))
     published_at: datetime | None = None
+    embedding: Embedding | None = None
 
 
 class ExistingKeywordInput(BaseModel):
@@ -28,9 +34,13 @@ class ExistingKeywordInput(BaseModel):
 class AnalyzeNewsBatchRequest(BaseModel):
     """Request for batch news analysis."""
 
+    user_id: int | None = None
+    target_date: date | None = None
     news: list[NewsInput]
     existing_keywords: list[ExistingKeywordInput] = Field(default_factory=list)
     top_k_keywords: int = 8
+    top_k_news_relations: int = 5
+    min_news_relation_score: float = 0.55
 
 
 class KeywordCandidate(BaseModel):
@@ -39,6 +49,8 @@ class KeywordCandidate(BaseModel):
     word: str
     normalized_word: str
     extraction_score: float
+    weight: float | None = None
+    evidence_text: str | None = None
 
 
 class KeywordResult(BaseModel):
@@ -52,12 +64,14 @@ class KeywordResult(BaseModel):
     is_new: bool
     aliases: list[str]
     extraction_score: float = 0.0
+    evidence_text: str | None = None
 
 
 class NewsAnalysisResult(BaseModel):
     """Per-news analysis output."""
 
     news_id: int
+    published_at: datetime | None = None
     embedding: Embedding
     keywords: list[KeywordResult]
 
@@ -65,12 +79,20 @@ class NewsAnalysisResult(BaseModel):
 class KeywordRelationResult(BaseModel):
     """Keyword relation candidate derived from co-occurrence and similarity."""
 
-    source_keyword_id: int | None = None
-    target_keyword_id: int | None = None
-    source_normalized_word: str
-    target_normalized_word: str
+    subject_keyword_id: int | None = None
+    related_keyword_id: int | None = None
+    subject_normalized_word: str
+    related_normalized_word: str
     relation_score: float
     evidence_news_ids: list[int]
+
+
+class NewsRelationResult(BaseModel):
+    """News relation output sorted by smaller id as subject."""
+
+    subject_news_id: int
+    related_news_id: int
+    relation_score: float
 
 
 class AnalyzeNewsBatchResponse(BaseModel):
@@ -78,6 +100,7 @@ class AnalyzeNewsBatchResponse(BaseModel):
 
     news_results: list[NewsAnalysisResult]
     keyword_relations: list[KeywordRelationResult]
+    news_relations: list[NewsRelationResult] = Field(default_factory=list)
 
 
 class NewsEmbeddingInput(BaseModel):
@@ -93,14 +116,6 @@ class BuildNewsRelationsRequest(BaseModel):
     news: list[NewsEmbeddingInput]
     top_k: int = 5
     min_score: float = 0.55
-
-
-class NewsRelationResult(BaseModel):
-    """News relation output sorted by smaller id as subject."""
-
-    subject_news_id: int
-    related_news_id: int
-    relation_score: float
 
 
 class BuildNewsRelationsResponse(BaseModel):
@@ -198,9 +213,12 @@ class SummaryKeywordInput(BaseModel):
 class SummaryNewsInput(BaseModel):
     """Related news evidence used for summary generation."""
 
+    model_config = ConfigDict(populate_by_name=True)
+
     news_id: int
     title: str
-    body: str
+    # body is the standard field and means Spring's 200-character news summary.
+    body: str = Field(validation_alias=AliasChoices("body", "summary", "content"))
 
 
 class SummaryRelatedKeywordInput(BaseModel):
@@ -218,6 +236,8 @@ class SummarizeRecommendKeywordRequest(BaseModel):
     related_news: list[SummaryNewsInput] = Field(default_factory=list)
     related_keywords: list[SummaryRelatedKeywordInput] = Field(default_factory=list)
     target_date: date
+    persona: str | None = None
+    category: str | None = None
 
 
 class SummarizeRecommendKeywordResponse(BaseModel):
