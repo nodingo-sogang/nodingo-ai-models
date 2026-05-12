@@ -12,7 +12,7 @@ ANALYZE_BATCH_PAYLOAD = {
             "keyword_id": 10,
             "word": "엔비디아",
             "normalized_word": "엔비디아",
-            "embedding": [0.0] * 1024,
+            "embedding": [0.0] * 1536,
         }
     ],
     "top_k_keywords": 8,
@@ -20,8 +20,8 @@ ANALYZE_BATCH_PAYLOAD = {
 
 BUILD_NEWS_RELATIONS_PAYLOAD = {
     "news": [
-        {"news_id": 1, "embedding": [0.1] * 1024},
-        {"news_id": 2, "embedding": [0.2] * 1024},
+        {"news_id": 1, "embedding": [0.1] * 1536},
+        {"news_id": 2, "embedding": [0.2] * 1536},
     ],
     "top_k": 5,
     "min_score": 0.55,
@@ -30,25 +30,25 @@ BUILD_NEWS_RELATIONS_PAYLOAD = {
 INIT_USER_EMBEDDING_PAYLOAD = {
     "user_id": 1,
     "interest_keywords": [
-        {"keyword_id": 10, "word": "엔비디아", "embedding": [0.1] * 1024},
-        {"keyword_id": 11, "word": "반도체", "embedding": [0.2] * 1024},
+        {"keyword_id": 10, "word": "엔비디아", "embedding": [0.1] * 1536},
+        {"keyword_id": 11, "word": "반도체", "embedding": [0.2] * 1536},
     ],
 }
 
 UPDATE_USER_EMBEDDING_PAYLOAD = {
     "user_id": 1,
-    "old_embedding": [0.1] * 1024,
+    "old_embedding": [0.1] * 1536,
     "activities": [
         {
             "type": "SCRAP",
             "news_id": 1,
-            "news_embedding": [0.2] * 1024,
+            "news_embedding": [0.2] * 1536,
             "weight": 0.35,
         },
         {
             "type": "CLICK",
             "keyword_id": 10,
-            "keyword_embedding": [0.3] * 1024,
+            "keyword_embedding": [0.3] * 1536,
             "weight": 0.15,
         },
     ],
@@ -57,13 +57,13 @@ UPDATE_USER_EMBEDDING_PAYLOAD = {
 
 RECOMMEND_KEYWORDS_PAYLOAD = {
     "user_id": 1,
-    "user_embedding": [0.1] * 1024,
+    "user_embedding": [0.1] * 1536,
     "candidate_keywords": [
         {
             "keyword_id": 10,
             "word": "엔비디아",
             "normalized_word": "엔비디아",
-            "embedding": [0.2] * 1024,
+            "embedding": [0.2] * 1536,
             "recent_importance": 0.8,
             "is_user_interest": True,
         }
