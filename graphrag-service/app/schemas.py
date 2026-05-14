@@ -73,6 +73,7 @@ class NewsAnalysisResult(BaseModel):
     news_id: int
     published_at: datetime | None = None
     embedding: Embedding
+    summary: str
     keywords: list[KeywordResult]
 
 

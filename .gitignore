@@ -1,5 +1,5 @@
 venv/
 .idea/
-.env
+graphrag-service/.env
 **/__pycache__/
 *.pyc

@@ -1,8 +1,10 @@
 import itertools
 import json
 import re
+import concurrent.futures
 from collections import defaultdict
 from datetime import date, datetime, timezone
+
 
 from keybert import KeyBERT
 try:
@@ -31,44 +33,80 @@ from app.utils.text_utils import clean_text, safe_join_title_body
 from app.utils.vector_utils import clip_score, cosine_similarity, zero_vector
 
 
+def generate_summary_with_llm(title: str, body: str) -> str:
+    """OpenAI(gpt-4o-mini)를 이용해 뉴스 기사를 200자 이내로 요약합니다."""
+    settings = get_settings()
+
+    try:
+        client = OpenAI(api_key=settings.openai_api_key)
+
+        prompt = f"다음 뉴스 기사의 제목과 본문을 읽고, 핵심 내용을 한국어로 200자 이내로 요약해줘.\n\n[제목]\n{title}\n\n[본문]\n{body}"
+
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": "너는 뉴스 기사 전문 요약 봇이야. 항상 객관적이고 간결하게 한국어로 요약해."},
+                {"role": "user", "content": prompt}
+            ],
+            max_tokens=300,
+            temperature=0.5
+        )
+        return response.choices[0].message.content.strip()
+
+    except Exception as e:
+        print(f">>>> [Python LLM Error] Summary generation failed: {e}")
+        return body[:200] + "... (요약 실패)"
+
+
+def process_single_news(news, request) -> NewsAnalysisResult:
+    """뉴스 1개를 처리하는 함수 (병렬 스레드에서 실행됨)"""
+    news_text = safe_join_title_body(news.title, news.body)
+    news_embedding = get_news_embedding(news.news_id, news_text, news.embedding)
+
+    # LLM 병렬 호출 구간
+    news_summary = generate_summary_with_llm(news.title, news.body)
+
+    candidates = extract_keywords_from_news(news.title, news.body, request.top_k_keywords)
+    keywords = resolve_keywords(candidates, request.existing_keywords)
+
+    weighted_keywords = []
+    for keyword in keywords:
+        weight = calculate_news_keyword_weight(
+            news.title,
+            news.body,
+            keyword.normalized_word,
+            keyword.extraction_score,
+            news_embedding,
+            keyword.embedding,
+        )
+        weighted_keywords.append(
+            keyword.model_copy(
+                update={
+                    "weight": weight,
+                    "evidence_text": keyword.evidence_text,
+                }
+            )
+        )
+
+    return NewsAnalysisResult(
+        news_id=news.news_id,
+        published_at=news.published_at,
+        embedding=news_embedding,
+        summary=news_summary,
+        keywords=weighted_keywords,
+    )
+
+
 def analyze_news_batch(request: AnalyzeNewsBatchRequest) -> AnalyzeNewsBatchResponse:
     """Analyze news articles and return embeddings, keywords, and keyword relations."""
 
     for existing in request.existing_keywords:
         validate_embedding_dim(existing.embedding)
 
-    news_results: list[NewsAnalysisResult] = []
-    for news in request.news:
-        news_text = safe_join_title_body(news.title, news.body)
-        news_embedding = get_news_embedding(news.news_id, news_text, news.embedding)
-        candidates = extract_keywords_from_news(news.title, news.body, request.top_k_keywords)
-        keywords = resolve_keywords(candidates, request.existing_keywords)
-        weighted_keywords = []
-        for keyword in keywords:
-            weight = calculate_news_keyword_weight(
-                news.title,
-                news.body,
-                keyword.normalized_word,
-                keyword.extraction_score,
-                news_embedding,
-                keyword.embedding,
-            )
-            weighted_keywords.append(
-                keyword.model_copy(
-                    update={
-                        "weight": weight,
-                        "evidence_text": keyword.evidence_text,
-                    }
-                )
-            )
-        news_results.append(
-            NewsAnalysisResult(
-                news_id=news.news_id,
-                published_at=news.published_at,
-                embedding=news_embedding,
-                keywords=weighted_keywords,
-            )
-        )
+    # 구형 for문 삭제하고, ThreadPoolExecutor로 50개 사용
+    with concurrent.futures.ThreadPoolExecutor(max_workers=50) as executor:
+        # request.news 리스트를 process_single_news에 매핑하여 병렬 실행 후 리스트로 묶음
+        news_results = list(executor.map(lambda n: process_single_news(n, request), request.news))
 
     return AnalyzeNewsBatchResponse(
         news_results=news_results,
@@ -79,7 +117,6 @@ def analyze_news_batch(request: AnalyzeNewsBatchRequest) -> AnalyzeNewsBatchResp
             request.min_news_relation_score,
         ),
     )
-
 
 def normalize_keyword(text: str) -> str:
     """Normalize a keyword for matching across aliases and backend records."""

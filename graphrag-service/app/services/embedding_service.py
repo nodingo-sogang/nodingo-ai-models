@@ -86,6 +86,7 @@ def embed_texts_openai(texts: list[str], cache_keys: list[str | None] | None = N
         response = client.embeddings.create(
             model=settings.openai_embedding_model,
             input=missing_texts,
+            dimensions=settings.embedding_dim
         )
         for cache_key_value, embedding_item, result_index in zip(
             missing_cache_keys,
@@ -110,8 +111,11 @@ def get_news_embedding(news_id: int, text: str, provided_embedding: Sequence[flo
 
 def validate_embedding_dim(vector: Sequence[float]) -> list[float]:
     """Validate that a vector has the configured embedding dimension."""
-
     settings = get_settings()
+
+    if len(vector) > settings.embedding_dim:
+        vector = vector[:settings.embedding_dim]
+
     if len(vector) != settings.embedding_dim:
         raise ValueError(
             f"Embedding dimension mismatch: expected {settings.embedding_dim}, got {len(vector)}."
