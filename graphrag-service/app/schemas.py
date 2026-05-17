@@ -51,6 +51,9 @@ class KeywordCandidate(BaseModel):
     extraction_score: float
     weight: float | None = None
     evidence_text: str | None = None
+    # 🔥 아래 두 줄 추가
+    personas: str | None = None
+    macro: str | None = None
 
 
 class KeywordResult(BaseModel):
@@ -65,7 +68,9 @@ class KeywordResult(BaseModel):
     aliases: list[str]
     extraction_score: float = 0.0
     evidence_text: str | None = None
-
+    # 아래 두 줄 추가
+    personas: str | None = None
+    macro: str | None = None
 
 class NewsAnalysisResult(BaseModel):
     """Per-news analysis output."""

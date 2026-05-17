@@ -103,8 +103,8 @@ def analyze_news_batch(request: AnalyzeNewsBatchRequest) -> AnalyzeNewsBatchResp
     for existing in request.existing_keywords:
         validate_embedding_dim(existing.embedding)
 
-    # 구형 for문 삭제하고, ThreadPoolExecutor로 50개 사용
-    with concurrent.futures.ThreadPoolExecutor(max_workers=50) as executor:
+    # 구형 for문 삭제하고, ThreadPoolExecutor로 10개 사용
+    with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
         # request.news 리스트를 process_single_news에 매핑하여 병렬 실행 후 리스트로 묶음
         news_results = list(executor.map(lambda n: process_single_news(n, request), request.news))
 
@@ -144,21 +144,22 @@ def extract_keywords_from_news_openai(title: str, body: str, top_k: int) -> list
     settings = get_settings()
     client = OpenAI(api_key=settings.openai_api_key)
     text = safe_join_title_body(title, body)
+
+    # 🌟 프롬프트: AI에게 대분류(personas), 중분류(macro), 소분류(specific)를 명확히 요구
     prompt = (
-        "한국어 뉴스 제목과 200자 요약문에서 그래프 노드로 쓰기 좋은 짧은 핵심 키워드를 추출하세요. "
-        "키워드는 사람/기업/산업/정책/시장 이슈 중심의 짧은 명사구여야 합니다. "
-        "문장형 키워드나 너무 긴 구절은 피하세요. "
-        "각 키워드는 word, normalized_word, weight, extraction_score, evidence_text 필드를 가져야 합니다. "
-        "normalized_word는 중복 병합에 쓰이므로 소문자와 공백 정리를 적용하세요. "
-        "weight와 extraction_score는 0과 1 사이 숫자입니다. "
-        f"키워드는 최대 {max(5, min(top_k, 10))}개만 반환하세요. "
-        "반드시 JSON object만 반환하세요.\n\n"
-        "예시 키워드: 반도체, 기준금리, AI 투자, 삼성전자, 환율, 부동산 PF\n\n"
+        "한국어 뉴스 제목과 200자 요약문에서 그래프 노드로 쓰기 좋은 짧은 핵심 소분류 키워드(specific)를 추출하세요. "
+        "또한, 각 키워드가 다음 6가지 대분류(personas) 중 어디에 속하는지 매핑하세요: "
+        "[POLITICS, ECONOMY, TECHNOLOGY, SOCIETY, CULTURE, INTERNATIONAL]. "
+        "그리고 해당 대분류 하위에서 묶일 수 있는 '중분류(macro)' 명칭(예: 부동산, IT/소프트웨어, 금융 등)도 함께 생성해 주세요. "
+        "각 키워드 객체는 specific, normalized_specific, personas, macro, weight, extraction_score, evidence_text 필드를 가져야 합니다. "
+        f"키워드는 최대 {max(5, min(top_k, 10))}개만 반환하세요. 반드시 JSON object만 반환하세요.\n\n"
         f"title: {clean_text(title)}\n"
         f"body: {clean_text(body)}\n\n"
-        '출력 형식: {"keywords":[{"word":"...", "normalized_word":"...", "weight":0.8, '
-        '"extraction_score":0.8, "evidence_text":"..."}]}'
+        '출력 형식: {"keywords":[{"specific":"비트코인", "normalized_specific":"비트코인", '
+        '"personas":"ECONOMY", "macro":"가상화폐", '
+        '"weight":0.8, "extraction_score":0.8, "evidence_text":"..."}]}'
     )
+
     response = client.chat.completions.create(
         model=settings.openai_model,
         messages=[
@@ -171,29 +172,43 @@ def extract_keywords_from_news_openai(title: str, body: str, top_k: int) -> list
         response_format={"type": "json_object"},
         max_completion_tokens=800,
     )
+
     content = response.choices[0].message.content or "{}"
     payload = json.loads(content)
     raw_keywords = payload.get("keywords", [])
+
     candidates: list[KeywordCandidate] = []
     seen: set[str] = set()
+
     for item in raw_keywords:
-        word = clean_text(str(item.get("word", "")))
-        normalized_word = normalize_keyword(str(item.get("normalized_word") or word))
+        # 🌟 JSON 파싱: specific, personas, macro 필드를 읽어옴
+        word = clean_text(str(item.get("specific", item.get("word", ""))))
+        normalized_word = normalize_keyword(str(item.get("normalized_specific", item.get("normalized_word", word))))
+
+        personas = str(item.get("personas", "")).upper()
+        macro = clean_text(str(item.get("macro", "")))
+
         if not word or not normalized_word or normalized_word in seen:
             continue
         seen.add(normalized_word)
+
         score = clip_score(float(item.get("extraction_score", item.get("weight", 0.5))))
+
+        # 🌟 KeywordCandidate 객체 생성 시 새로 추가된 필드 주입
         candidates.append(
             KeywordCandidate(
-                word=word,
+                word=word,  # 파이썬 내부 변수명은 호환성을 위해 word 유지
                 normalized_word=normalized_word,
                 weight=clip_score(float(item.get("weight", score))),
                 extraction_score=score,
                 evidence_text=clean_text(str(item.get("evidence_text", ""))) or None,
+                personas=personas,  # 🔥 대분류
+                macro=macro  # 🔥 중분류
             )
         )
         if len(candidates) >= max(1, top_k):
             break
+
     return candidates
 
 
@@ -284,8 +299,8 @@ def extract_keywords_from_news_frequency(title: str, body: str, top_k: int) -> l
 
 
 def resolve_keywords(
-    candidates: list[KeywordCandidate],
-    existing_keywords: list[ExistingKeywordInput],
+        candidates: list[KeywordCandidate],
+        existing_keywords: list[ExistingKeywordInput],
 ) -> list[KeywordResult]:
     """Resolve extracted keywords against existing keywords by normalized_word."""
 
@@ -293,11 +308,13 @@ def resolve_keywords(
         normalize_keyword(item.normalized_word): item for item in existing_keywords
     }
     results: list[KeywordResult] = []
+
     for candidate in candidates:
         existing = existing_by_normalized.get(candidate.normalized_word)
         embedding = existing.embedding if existing else embed_keyword(candidate.normalized_word)
         word = existing.word if existing else candidate.word
         normalized_word = existing.normalized_word if existing else candidate.normalized_word
+
         results.append(
             KeywordResult(
                 keyword_id=existing.keyword_id if existing else None,
@@ -309,6 +326,9 @@ def resolve_keywords(
                 aliases=build_keyword_aliases(word, normalized_word),
                 extraction_score=candidate.extraction_score,
                 evidence_text=candidate.evidence_text,
+                # 🔥 새로 추가된 필드들 매핑!
+                personas=candidate.personas,
+                macro=candidate.macro
             )
         )
     return results
