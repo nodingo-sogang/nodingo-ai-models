@@ -212,6 +212,44 @@ def extract_keywords_from_news_openai(title: str, body: str, top_k: int) -> list
     return candidates
 
 
+# [BUG FIX 3]
+def classify_keywords_with_openai(words: list[str]) -> dict[str, dict]:
+    """Classify a word list into personas/macro via OpenAI.
+
+    Returns {word: {"personas": ..., "macro": ...}}.
+    """
+    settings = get_settings()
+    client = OpenAI(api_key=settings.openai_api_key)
+    word_list_str = ", ".join(words)
+    prompt = (
+        "아래 단어들을 각각 다음 6가지 대분류(personas) 중 하나로 분류하고, 중분류(macro)도 작성하세요: "
+        "[POLITICS, ECONOMY, TECHNOLOGY, SOCIETY, CULTURE, INTERNATIONAL]. "
+        "반드시 JSON object만 반환하세요.\n\n"
+        f"단어 목록: {word_list_str}\n\n"
+        '출력 형식: {"classifications": [{"word": "삼성전자", "personas": "ECONOMY", "macro": "반도체"}]}'
+    )
+    response = client.chat.completions.create(
+        model=settings.openai_model,
+        messages=[
+            {"role": "system", "content": "You classify Korean words into categories and return strict JSON."},
+            {"role": "user", "content": prompt},
+        ],
+        response_format={"type": "json_object"},
+        max_completion_tokens=800,
+    )
+    content = response.choices[0].message.content or "{}"
+    payload = json.loads(content)
+    result: dict[str, dict] = {}
+    for item in payload.get("classifications", []):
+        word = item.get("word", "")
+        if word:
+            result[word] = {
+                "personas": str(item.get("personas", "ECONOMY")).upper(),
+                "macro": str(item.get("macro", "기타")),
+            }
+    return result
+
+
 def extract_keywords_from_news_fallback(title: str, body: str, top_k: int) -> list[KeywordCandidate]:
     """Fallback keyword extraction using simple Korean/English token frequency."""
 
@@ -220,9 +258,30 @@ def extract_keywords_from_news_fallback(title: str, body: str, top_k: int) -> li
         return []
 
     try:
-        return extract_keywords_from_news_keybert(title, body, top_k)
+        candidates = extract_keywords_from_news_keybert(title, body, top_k)
     except Exception:
-        return extract_keywords_from_news_frequency(title, body, top_k)
+        candidates = extract_keywords_from_news_frequency(title, body, top_k)
+
+    # [BUG FIX 3] Post-process fallback candidates: attach personas/macro via OpenAI
+    settings = get_settings()
+    if settings.openai_api_key and OpenAI is not None and candidates:
+        try:
+            words = [c.word for c in candidates]
+            classifications = classify_keywords_with_openai(words)
+            for candidate in candidates:
+                cls = classifications.get(candidate.word, {})
+                candidate.personas = cls.get("personas", "ECONOMY")
+                candidate.macro = cls.get("macro", "기타")
+            return candidates
+        except Exception:
+            pass
+    # [BUG FIX 3] Default when OpenAI unavailable or failed
+    for candidate in candidates:
+        if candidate.personas is None:
+            candidate.personas = "ECONOMY"
+        if candidate.macro is None:
+            candidate.macro = "기타"
+    return candidates
 
 
 def extract_keywords_from_news_keybert(title: str, body: str, top_k: int) -> list[KeywordCandidate]:
@@ -451,7 +510,10 @@ def _order_keyword_pair(left: KeywordResult, right: KeywordResult) -> tuple[Keyw
 
     if left.keyword_id is not None and right.keyword_id is not None:
         return (left, right) if left.keyword_id <= right.keyword_id else (right, left)
-    return (left, right) if left.normalized_word <= right.normalized_word else (right, left)
+    # [BUG FIX 4] Guard against None/empty normalized_word before string comparison
+    left_nw = left.normalized_word or ""
+    right_nw = right.normalized_word or ""
+    return (left, right) if left_nw <= right_nw else (right, left)
 
 
 def calculate_recency_score(published_at: datetime | None, target_date: date | None = None) -> float:
