@@ -1,6 +1,7 @@
 import itertools
 import json
 import re
+import sys
 import concurrent.futures
 from collections import defaultdict
 from datetime import date, datetime, timezone
@@ -60,42 +61,53 @@ def generate_summary_with_llm(title: str, body: str) -> str:
 
 def process_single_news(news, request) -> NewsAnalysisResult:
     """뉴스 1개를 처리하는 함수 (병렬 스레드에서 실행됨)"""
-    news_text = safe_join_title_body(news.title, news.body)
-    news_embedding = get_news_embedding(news.news_id, news_text, news.embedding)
+    try:
+        news_text = safe_join_title_body(news.title, news.body)
+        news_embedding = get_news_embedding(news.news_id, news_text, news.embedding)
 
-    # LLM 병렬 호출 구간
-    news_summary = generate_summary_with_llm(news.title, news.body)
+        # 요약은 잘 나오니까 건너뜁니다
+        news_summary = generate_summary_with_llm(news.title, news.body)
 
-    candidates = extract_keywords_from_news(news.title, news.body, request.top_k_keywords)
-    keywords = resolve_keywords(candidates, request.existing_keywords)
+        # 🚨 여기서 키워드 추출 시도
+        candidates = extract_keywords_from_news(news.title, news.body, request.top_k_keywords)
 
-    weighted_keywords = []
-    for keyword in keywords:
-        weight = calculate_news_keyword_weight(
-            news.title,
-            news.body,
-            keyword.normalized_word,
-            keyword.extraction_score,
-            news_embedding,
-            keyword.embedding,
-        )
-        weighted_keywords.append(
-            keyword.model_copy(
-                update={
-                    "weight": weight,
-                    "evidence_text": keyword.evidence_text,
-                }
+        # 🔥 [DEBUG] 추출된 후보군이 진짜 들어오는지 확인
+        print(f"DEBUG: NewsID {news.news_id} / 후보군 수: {len(candidates)}", file=sys.stderr, flush=True)
+
+        keywords = resolve_keywords(candidates, request.existing_keywords)
+
+        weighted_keywords = []
+        for keyword in keywords:
+            weight = calculate_news_keyword_weight(
+                news.title, news.body, keyword.normalized_word,
+                keyword.extraction_score, news_embedding, keyword.embedding
             )
+            weighted_keywords.append(
+                keyword.model_copy(update={"weight": weight, "evidence_text": keyword.evidence_text})
+            )
+
+        return NewsAnalysisResult(
+            news_id=news.news_id,
+            published_at=news.published_at,
+            embedding=news_embedding,
+            summary=news_summary,
+            keywords=weighted_keywords,
         )
 
-    return NewsAnalysisResult(
-        news_id=news.news_id,
-        published_at=news.published_at,
-        embedding=news_embedding,
-        summary=news_summary,
-        keywords=weighted_keywords,
-    )
+    except Exception as e:
+        # 🔥 [강제 출력] 에러가 나면 여기서 무조건 터미널에 찍힙니다!
+        import traceback
+        print(f"\n🚨 [CRITICAL ERROR] NewsID {news.news_id} 처리 중 사망:", file=sys.stderr, flush=True)
+        traceback.print_exc(file=sys.stderr)
 
+        # 에러가 나도 배치가 멈추지 않게 빈 결과 반환
+        return NewsAnalysisResult(
+            news_id=news.news_id,
+            published_at=news.published_at,
+            embedding=[],
+            summary="분석 실패",
+            keywords=[]
+        )
 
 def analyze_news_batch(request: AnalyzeNewsBatchRequest) -> AnalyzeNewsBatchResponse:
     """Analyze news articles and return embeddings, keywords, and keyword relations."""
@@ -103,10 +115,14 @@ def analyze_news_batch(request: AnalyzeNewsBatchRequest) -> AnalyzeNewsBatchResp
     for existing in request.existing_keywords:
         validate_embedding_dim(existing.embedding)
 
-    # 구형 for문 삭제하고, ThreadPoolExecutor로 10개 사용
-    with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
+    # 구형 for문 삭제하고, ThreadPoolExecutor로 30개 사용
+    with concurrent.futures.ThreadPoolExecutor(max_workers=30) as executor:
         # request.news 리스트를 process_single_news에 매핑하여 병렬 실행 후 리스트로 묶음
         news_results = list(executor.map(lambda n: process_single_news(n, request), request.news))
+
+    for res in news_results:
+        for kw in res.keywords:
+            print(f"DEBUG: Word={kw.word}, Macro={kw.macro}, Persona={kw.personas}")
 
     return AnalyzeNewsBatchResponse(
         news_results=news_results,
@@ -127,88 +143,116 @@ def normalize_keyword(text: str) -> str:
 
 
 def extract_keywords_from_news(title: str, body: str, top_k: int) -> list[KeywordCandidate]:
-    """Extract top keyword candidates from title and body using OpenAI with a fallback."""
-
     settings = get_settings()
     if settings.use_openai_keyword_extraction and settings.openai_api_key and OpenAI is not None:
         try:
             return extract_keywords_from_news_openai(title, body, top_k)
-        except Exception:
+        except Exception as e:
+            # 🔥 [수정] flush=True 로 버퍼링 무시하고 강제 출력!
+            print(f"\n🚨 [OpenAI 메인 로직 에러] 원인: {e}\n", flush=True)
+            import traceback
+            traceback.print_exc()
             return extract_keywords_from_news_fallback(title, body, top_k)
+
+    print("\n⚠️ [경고] 설정 문제로 메인 로직을 타지 못하고 Fallback으로 빠졌습니다!\n", flush=True)
     return extract_keywords_from_news_fallback(title, body, top_k)
 
 
 def extract_keywords_from_news_openai(title: str, body: str, top_k: int) -> list[KeywordCandidate]:
-    """Extract Korean news graph keywords with OpenAI and parse JSON output."""
-
     settings = get_settings()
     client = OpenAI(api_key=settings.openai_api_key)
-    text = safe_join_title_body(title, body)
 
-    # 🌟 프롬프트: AI에게 대분류(personas), 중분류(macro), 소분류(specific)를 명확히 요구
     prompt = (
-        "한국어 뉴스 제목과 200자 요약문에서 그래프 노드로 쓰기 좋은 짧은 핵심 소분류 키워드(specific)를 추출하세요. "
-        "또한, 각 키워드가 다음 6가지 대분류(personas) 중 어디에 속하는지 매핑하세요: "
-        "[POLITICS, ECONOMY, TECHNOLOGY, SOCIETY, CULTURE, INTERNATIONAL]. "
-        "그리고 해당 대분류 하위에서 묶일 수 있는 '중분류(macro)' 명칭(예: 부동산, IT/소프트웨어, 금융 등)도 함께 생성해 주세요. "
-        "각 키워드 객체는 specific, normalized_specific, personas, macro, weight, extraction_score, evidence_text 필드를 가져야 합니다. "
-        f"키워드는 최대 {max(5, min(top_k, 10))}개만 반환하세요. 반드시 JSON object만 반환하세요.\n\n"
-        f"title: {clean_text(title)}\n"
-        f"body: {clean_text(body)}\n\n"
-        '출력 형식: {"keywords":[{"specific":"비트코인", "normalized_specific":"비트코인", '
-        '"personas":"ECONOMY", "macro":"가상화폐", '
-        '"weight":0.8, "extraction_score":0.8, "evidence_text":"..."}]}'
+        f"제목: {title}\n"
+        f"내용: {body}\n\n"
+        f"위 뉴스에서 핵심 키워드 {top_k}개를 추출하세요."
     )
 
-    response = client.chat.completions.create(
-        model=settings.openai_model,
-        messages=[
-            {
-                "role": "system",
-                "content": "You extract concise Korean news keywords for graph nodes and return strict JSON.",
-            },
-            {"role": "user", "content": prompt},
-        ],
-        response_format={"type": "json_object"},
-        max_completion_tokens=800,
-    )
+    try:
+        response = client.chat.completions.create(
+            model=settings.openai_model,
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "당신은 뉴스 분석 전문가입니다. 반드시 아래 JSON 형식으로만 응답하세요. "
+                        "다른 텍스트는 절대 포함하지 마세요.\n"
+                        "personas는 반드시 [POLITICS, ECONOMY, TECHNOLOGY, SOCIETY, CULTURE, INTERNATIONAL] 중 하나여야 합니다.\n"
+                        '{"keywords": [{"specific": "키워드", "personas": "ECONOMY", "macro": "중분류", "weight": 0.8, "evidence_text": "근거"}]}'
+                    )
+                },
+                {"role": "user", "content": prompt},
+            ],
+            response_format={"type": "json_object"},
+            temperature=0.3,
+            max_completion_tokens=800,
+        )
 
-    content = response.choices[0].message.content or "{}"
-    payload = json.loads(content)
-    raw_keywords = payload.get("keywords", [])
+        content = response.choices[0].message.content or ""
+        print(f">>>> [DEBUG] AI 원본 응답: {repr(content)}", file=sys.stderr, flush=True)
+
+        if not content.strip():
+            print("🚨 [DEBUG] AI 응답이 빈 문자열!", file=sys.stderr, flush=True)
+            return extract_keywords_from_news_fallback(title, body, top_k)
+
+        # json_object 모드면 마크다운 없이 오지만, 혹시 몰라 방어
+        clean_content = re.sub(r'^```json\s*|\s*```$', '', content.strip())
+        payload = json.loads(clean_content)
+
+        print(f">>>> [DEBUG] 파싱된 payload: {payload}", file=sys.stderr, flush=True)
+
+        raw_keywords = payload.get("keywords") or payload.get("results") or []
+        print(f">>>> [DEBUG] raw_keywords 개수: {len(raw_keywords)}", file=sys.stderr, flush=True)
+
+    except json.JSONDecodeError as e:
+        print(f"🚨 [JSON 파싱 에러] content: {repr(content)}, 원인: {e}", file=sys.stderr, flush=True)
+        return extract_keywords_from_news_fallback(title, body, top_k)
+    except Exception as e:
+        print(f"🚨 [추출 에러] 원인: {e}", file=sys.stderr, flush=True)
+        import traceback
+        traceback.print_exc(file=sys.stderr)
+        return extract_keywords_from_news_fallback(title, body, top_k)
 
     candidates: list[KeywordCandidate] = []
     seen: set[str] = set()
 
     for item in raw_keywords:
-        # 🌟 JSON 파싱: specific, personas, macro 필드를 읽어옴
-        word = clean_text(str(item.get("specific", item.get("word", ""))))
-        normalized_word = normalize_keyword(str(item.get("normalized_specific", item.get("normalized_word", word))))
+        print(f">>>> [DEBUG] 처리 중 item: {item}", file=sys.stderr, flush=True)
 
-        personas = str(item.get("personas", "")).upper()
-        macro = clean_text(str(item.get("macro", "")))
+        raw_word = item.get("specific") or item.get("word") or item.get("keyword") or ""
+        word = clean_text(str(raw_word))
 
-        if not word or not normalized_word or normalized_word in seen:
+        if not word:
+            print(f"🚨 [DEBUG] word 비어있음! item: {item}", file=sys.stderr, flush=True)
+            continue
+
+        norm = clean_text(str(item.get("normalized_specific") or item.get("normalized_word") or word))
+        normalized_word = normalize_keyword(norm)
+
+        if normalized_word in seen:
             continue
         seen.add(normalized_word)
 
-        score = clip_score(float(item.get("extraction_score", item.get("weight", 0.5))))
+        personas = str(item.get("personas") or item.get("persona") or "ECONOMY").upper()
+        macro = clean_text(str(item.get("macro") or item.get("category") or "기타"))
+        score = clip_score(float(item.get("weight") or item.get("extraction_score") or 0.5))
 
-        # 🌟 KeywordCandidate 객체 생성 시 새로 추가된 필드 주입
         candidates.append(
             KeywordCandidate(
-                word=word,  # 파이썬 내부 변수명은 호환성을 위해 word 유지
+                word=word,
                 normalized_word=normalized_word,
-                weight=clip_score(float(item.get("weight", score))),
+                weight=score,
                 extraction_score=score,
                 evidence_text=clean_text(str(item.get("evidence_text", ""))) or None,
-                personas=personas,  # 🔥 대분류
-                macro=macro  # 🔥 중분류
+                personas=personas,
+                macro=macro,
             )
         )
+
         if len(candidates) >= max(1, top_k):
             break
 
+    print(f">>>> [DEBUG] 최종 candidates 개수: {len(candidates)}", file=sys.stderr, flush=True)
     return candidates
 
 
@@ -221,33 +265,51 @@ def classify_keywords_with_openai(words: list[str]) -> dict[str, dict]:
     settings = get_settings()
     client = OpenAI(api_key=settings.openai_api_key)
     word_list_str = ", ".join(words)
+
+    # 🔥 [수정 1] OpenAI로 넘기는 단어 목록 확인 (버퍼링 무시)
+    print(f"\n🔥 [Fallback 분류 요청 단어들]: {word_list_str}", flush=True)
+
     prompt = (
         "아래 단어들을 각각 다음 6가지 대분류(personas) 중 하나로 분류하고, 중분류(macro)도 작성하세요: "
         "[POLITICS, ECONOMY, TECHNOLOGY, SOCIETY, CULTURE, INTERNATIONAL]. "
-        "반드시 JSON object만 반환하세요.\n\n"
+        "반드시 이 6가지 외의 다른 값은 절대 사용하지 마세요. "
+        "반드시 아래 형식의 JSON object만 반환하세요. 다른 텍스트는 절대 포함하지 마세요.\n\n"
         f"단어 목록: {word_list_str}\n\n"
-        '출력 형식: {"classifications": [{"word": "삼성전자", "personas": "ECONOMY", "macro": "반도체"}]}'
+        '출력 형식 예시: {{"classifications": [{{"word": "삼성전자", "personas": "ECONOMY", "macro": "반도체"}}]}}'
     )
-    response = client.chat.completions.create(
-        model=settings.openai_model,
-        messages=[
-            {"role": "system", "content": "You classify Korean words into categories and return strict JSON."},
-            {"role": "user", "content": prompt},
-        ],
-        response_format={"type": "json_object"},
-        max_completion_tokens=800,
-    )
-    content = response.choices[0].message.content or "{}"
-    payload = json.loads(content)
-    result: dict[str, dict] = {}
-    for item in payload.get("classifications", []):
-        word = item.get("word", "")
-        if word:
-            result[word] = {
-                "personas": str(item.get("personas", "ECONOMY")).upper(),
-                "macro": str(item.get("macro", "기타")),
-            }
-    return result
+
+    try:
+        response = client.chat.completions.create(
+            model=settings.openai_model,
+            messages=[
+                {"role": "system", "content": "You classify Korean words into categories and return strict JSON."},
+                {"role": "user", "content": prompt},
+            ],
+            response_format={"type": "json_object"},
+            max_completion_tokens=800,
+        )
+        content = response.choices[0].message.content or "{}"
+
+        # 🔥 [수정 2] AI가 뱉어낸 분류 결과 강제 출력!
+        print(f"\n🔥 [Fallback AI 날것 응답]: {content}\n", flush=True)
+
+        payload = json.loads(content)
+        result: dict[str, dict] = {}
+        for item in payload.get("classifications", []):
+            word = item.get("word", "")
+            if word:
+                result[word] = {
+                    "personas": str(item.get("personas", "ECONOMY")).upper(),
+                    "macro": str(item.get("macro", "기타")),
+                }
+        return result
+
+    except Exception as e:
+        # 🔥 [수정 3] 여기서 터진 에러를 절대 묻히게 두지 않음!
+        print(f"\n🚨 [classify_keywords_with_openai 내부 에러] 원인: {e}\n", flush=True)
+        import traceback
+        traceback.print_exc()
+        raise e  # 에러를 숨기지 않고 바깥으로 던짐
 
 
 def extract_keywords_from_news_fallback(title: str, body: str, top_k: int) -> list[KeywordCandidate]:
@@ -273,7 +335,11 @@ def extract_keywords_from_news_fallback(title: str, body: str, top_k: int) -> li
                 candidate.personas = cls.get("personas", "ECONOMY")
                 candidate.macro = cls.get("macro", "기타")
             return candidates
-        except Exception:
+        except Exception as e:
+            # 🔥 [수정] 여기서 에러를 삼키고(pass) 있었습니다!! 무조건 출력하게 변경!
+            print(f"\n🚨 [Fallback OpenAI 분류 실패] 원인: {e}\n", flush=True)
+            import traceback
+            traceback.print_exc()
             pass
     # [BUG FIX 3] Default when OpenAI unavailable or failed
     for candidate in candidates:
