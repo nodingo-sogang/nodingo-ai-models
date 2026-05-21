@@ -115,7 +115,7 @@ def analyze_news_batch(request: AnalyzeNewsBatchRequest) -> AnalyzeNewsBatchResp
     for existing in request.existing_keywords:
         validate_embedding_dim(existing.embedding)
 
-    # 구형 for문 삭제하고, ThreadPoolExecutor로 10개 사용
+    # 구형 for문 삭제하고, ThreadPoolExecutor로 30개 사용
     with concurrent.futures.ThreadPoolExecutor(max_workers=30) as executor:
         # request.news 리스트를 process_single_news에 매핑하여 병렬 실행 후 리스트로 묶음
         news_results = list(executor.map(lambda n: process_single_news(n, request), request.news))
@@ -177,6 +177,7 @@ def extract_keywords_from_news_openai(title: str, body: str, top_k: int) -> list
                     "content": (
                         "당신은 뉴스 분석 전문가입니다. 반드시 아래 JSON 형식으로만 응답하세요. "
                         "다른 텍스트는 절대 포함하지 마세요.\n"
+                        "personas는 반드시 [POLITICS, ECONOMY, TECHNOLOGY, SOCIETY, CULTURE, INTERNATIONAL] 중 하나여야 합니다.\n"
                         '{"keywords": [{"specific": "키워드", "personas": "ECONOMY", "macro": "중분류", "weight": 0.8, "evidence_text": "근거"}]}'
                     )
                 },
@@ -271,6 +272,7 @@ def classify_keywords_with_openai(words: list[str]) -> dict[str, dict]:
     prompt = (
         "아래 단어들을 각각 다음 6가지 대분류(personas) 중 하나로 분류하고, 중분류(macro)도 작성하세요: "
         "[POLITICS, ECONOMY, TECHNOLOGY, SOCIETY, CULTURE, INTERNATIONAL]. "
+        "반드시 이 6가지 외의 다른 값은 절대 사용하지 마세요. "
         "반드시 아래 형식의 JSON object만 반환하세요. 다른 텍스트는 절대 포함하지 마세요.\n\n"
         f"단어 목록: {word_list_str}\n\n"
         '출력 형식 예시: {{"classifications": [{{"word": "삼성전자", "personas": "ECONOMY", "macro": "반도체"}}]}}'
