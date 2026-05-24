@@ -576,7 +576,6 @@ def _order_keyword_pair(left: KeywordResult, right: KeywordResult) -> tuple[Keyw
 
     if left.keyword_id is not None and right.keyword_id is not None:
         return (left, right) if left.keyword_id <= right.keyword_id else (right, left)
-    # [BUG FIX 4] Guard against None/empty normalized_word before string comparison
     left_nw = left.normalized_word or ""
     right_nw = right.normalized_word or ""
     return (left, right) if left_nw <= right_nw else (right, left)
