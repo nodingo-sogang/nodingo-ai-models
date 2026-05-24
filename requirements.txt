@@ -113,6 +113,7 @@ psutil==7.0.0
 pure_eval==0.2.3
 pycparser==2.22
 pydot==4.0.1
+pydantic-settings>=2.0.0
 Pygments==2.19.2
 PyJWT==2.9.0
 pyparsing==3.2.3
