@@ -1,7 +1,6 @@
 from app.schemas import GraphEdge, GraphNode, GraphPreviewRequest, GraphPreviewResponse
 from app.utils.vector_utils import clip_score
 
-
 def build_graph_preview(request: GraphPreviewRequest) -> GraphPreviewResponse:
     """Build frontend graph preview nodes and edges from recommendation rows."""
 
