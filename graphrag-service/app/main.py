@@ -1,4 +1,4 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 
 from app.config import get_settings
 from app.schemas import (
@@ -81,16 +81,21 @@ def update_user_embedding_endpoint(request: UpdateUserEmbeddingRequest) -> UserE
 
 
 @app.post("/v1/recommend-keywords", response_model=RecommendKeywordsResponse)
-def recommend_keywords_endpoint(request: RecommendKeywordsRequest) -> RecommendKeywordsResponse:
+async def recommend_keywords_endpoint(
+    request: Request,
+    payload: RecommendKeywordsRequest,
+) -> RecommendKeywordsResponse:
     """Score and rank keyword recommendations without generating summaries."""
 
+    raw_payload = await request.json()
     return RecommendKeywordsResponse(
         recommend_keywords=recommend_keywords(
-            request.user_id,
-            request.user_embedding,
-            request.candidate_keywords,
-            request.target_date,
-            request.top_k,
+            payload.user_id,
+            payload.user_embedding,
+            payload.candidate_keywords,
+            payload.target_date,
+            payload.top_k,
+            raw_payload=raw_payload if isinstance(raw_payload, dict) else None,
         )
     )
 
