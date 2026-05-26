@@ -5,6 +5,7 @@ pydantic-settings==2.14.1
 uvicorn[standard]>=0.22.0
 
 # 2. AI / NLP Dependencies (의존성 순서대로 정렬)
+openai>=1.0.0
 torch==2.12.0
 transformers==5.9.0
 sentence-transformers==5.5.1
