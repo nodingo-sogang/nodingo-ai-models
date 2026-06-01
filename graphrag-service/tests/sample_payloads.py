@@ -97,3 +97,18 @@ GRAPH_PREVIEW_PAYLOAD = {
         {"source_keyword_id": 10, "target_keyword_id": 11, "relation_score": 0.86}
     ],
 }
+
+QUIZ_GENERATE_PAYLOAD = {
+    "keyword_id": 10,
+    "word": "HBM4",
+    "summary": "HBM4는 AI 반도체 수요 확대와 함께 주목받는 차세대 고대역폭 메모리입니다.",
+    "related_news": [
+        {
+            "news_id": 1,
+            "title": "삼성전자, HBM4 양산 가속화... 엔비디아 공급 임박",
+            "body": "삼성전자가 HBM4 양산 일정을 앞당기며 AI 반도체 시장 대응을 강화하고 있습니다.",
+            "url": "https://example.com/news/1",
+        }
+    ],
+    "num_questions": 3,
+}

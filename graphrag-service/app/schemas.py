@@ -288,6 +288,8 @@ class GraphNode(BaseModel):
     score: float
     summary: str | None = None
     persona: str | None = None
+    unlock_level: int | None = None
+    visibility: Literal["VISIBLE", "FOG", "HIDDEN"] = "VISIBLE"
 
 
 class GraphEdge(BaseModel):
@@ -303,3 +305,41 @@ class GraphPreviewResponse(BaseModel):
 
     nodes: list[GraphNode]
     edges: list[GraphEdge]
+
+
+class QuizRelatedNewsInput(BaseModel):
+    """Related news evidence used for quiz generation."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    news_id: int
+    title: str
+    body: str = Field(validation_alias=AliasChoices("body", "summary", "content"))
+    url: str | None = None
+
+
+class GenerateQuizzesRequest(BaseModel):
+    """Request to generate news-grounded multiple-choice quizzes."""
+
+    keyword_id: int
+    word: str
+    summary: str | None = None
+    related_news: list[QuizRelatedNewsInput] = Field(default_factory=list)
+    num_questions: int = 3
+
+
+class QuizInfo(BaseModel):
+    """One generated multiple-choice quiz."""
+
+    question: str
+    options: list[str] = Field(min_length=4, max_length=4)
+    answer_index: int = Field(ge=0, le=3)
+    explanation: str
+    source_news_ids: list[int] = Field(default_factory=list)
+
+
+class GenerateQuizzesResponse(BaseModel):
+    """Generated quiz response consumed by Spring Boot."""
+
+    keyword_id: int
+    quizzes: list[QuizInfo]

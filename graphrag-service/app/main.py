@@ -6,6 +6,8 @@ from app.schemas import (
     AnalyzeNewsBatchResponse,
     BuildNewsRelationsRequest,
     BuildNewsRelationsResponse,
+    GenerateQuizzesRequest,
+    GenerateQuizzesResponse,
     GraphPreviewRequest,
     GraphPreviewResponse,
     InitUserEmbeddingRequest,
@@ -18,6 +20,7 @@ from app.schemas import (
 )
 from app.services.graph_service import build_graph_preview
 from app.services.keyword_service import analyze_news_batch
+from app.services.quiz_service import generate_quizzes
 from app.services.recommendation_service import recommend_keywords
 from app.services.relation_service import build_news_relations
 from app.services.summary_service import generate_recommend_keyword_summary
@@ -126,3 +129,10 @@ def graph_preview_endpoint(request: GraphPreviewRequest) -> GraphPreviewResponse
     """Build graph preview JSON for frontend rendering."""
 
     return build_graph_preview(request)
+
+
+@app.post("/v1/quizzes/generate", response_model=GenerateQuizzesResponse)
+def generate_quizzes_endpoint(request: GenerateQuizzesRequest) -> GenerateQuizzesResponse:
+    """Generate news-grounded multiple-choice quizzes for one keyword."""
+
+    return generate_quizzes(request)
