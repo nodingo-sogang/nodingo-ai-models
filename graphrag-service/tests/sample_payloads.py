@@ -24,7 +24,7 @@ BUILD_NEWS_RELATIONS_PAYLOAD = {
         {"news_id": 2, "embedding": [0.2] * 1536},
     ],
     "top_k": 5,
-    "min_score": 0.55,
+    "min_score": 0.33,
 }
 
 INIT_USER_EMBEDDING_PAYLOAD = {

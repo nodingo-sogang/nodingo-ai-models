@@ -62,7 +62,7 @@ curl http://localhost:8000/health
 ```bash
 curl -X POST http://localhost:8000/v1/news/analyze-batch ^
   -H "Content-Type: application/json" ^
-  -d "{\"user_id\":1,\"target_date\":\"2026-05-12\",\"news\":[{\"news_id\":1,\"title\":\"삼성전자, HBM4 양산 가속화... 엔비디아 공급 임박\",\"body\":\"삼성전자가 차세대 고대역폭 메모리인 HBM4의 양산 일정을 앞당기며 엔비디아와의 파트너십을 강화하고 있습니다.\",\"published_at\":\"2026-05-12T09:00:00\"}],\"existing_keywords\":[],\"top_k_keywords\":8,\"top_k_news_relations\":5,\"min_news_relation_score\":0.55}"
+  -d "{\"user_id\":1,\"target_date\":\"2026-05-12\",\"news\":[{\"news_id\":1,\"title\":\"삼성전자, HBM4 양산 가속화... 엔비디아 공급 임박\",\"body\":\"삼성전자가 차세대 고대역폭 메모리인 HBM4의 양산 일정을 앞당기며 엔비디아와의 파트너십을 강화하고 있습니다.\",\"published_at\":\"2026-05-12T09:00:00\"}],\"existing_keywords\":[],\"top_k_keywords\":8,\"top_k_news_relations\":5,\"min_news_relation_score\":0.33}"
 ```
 
 ### POST /v1/news/build-news-relations
@@ -70,7 +70,7 @@ curl -X POST http://localhost:8000/v1/news/analyze-batch ^
 ```bash
 curl -X POST http://localhost:8000/v1/news/build-news-relations ^
   -H "Content-Type: application/json" ^
-  -d "{\"news\":[{\"news_id\":1,\"embedding\":[0.1,0.2]},{\"news_id\":2,\"embedding\":[0.2,0.3]}],\"top_k\":5,\"min_score\":0.55}"
+  -d "{\"news\":[{\"news_id\":1,\"embedding\":[0.1,0.2]},{\"news_id\":2,\"embedding\":[0.2,0.3]}],\"top_k\":5,\"min_score\":0.33}"
 ```
 
 실제 호출에서는 `.env`의 `EMBEDDING_DIM`과 같은 길이의 embedding을 전달해야 합니다.

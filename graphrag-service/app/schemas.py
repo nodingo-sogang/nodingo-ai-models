@@ -40,7 +40,7 @@ class AnalyzeNewsBatchRequest(BaseModel):
     existing_keywords: list[ExistingKeywordInput] = Field(default_factory=list)
     top_k_keywords: int = 8
     top_k_news_relations: int = 5
-    min_news_relation_score: float = 0.55
+    min_news_relation_score: float = 0.33
 
 
 class KeywordCandidate(BaseModel):
@@ -121,7 +121,7 @@ class BuildNewsRelationsRequest(BaseModel):
 
     news: list[NewsEmbeddingInput]
     top_k: int = 5
-    min_score: float = 0.55
+    min_score: float = 0.33
 
 
 class BuildNewsRelationsResponse(BaseModel):
