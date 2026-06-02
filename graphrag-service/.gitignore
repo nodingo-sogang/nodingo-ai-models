@@ -7,3 +7,4 @@ __pycache__/
 .ruff_cache/
 tests/news_full_analyze_batch_*.json
 tests/news_full_keyword_graph.html
+test2/

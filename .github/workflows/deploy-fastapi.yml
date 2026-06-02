@@ -1,0 +1,57 @@
+name: Deploy FastAPI To EC2
+on:
+  push:
+    branches:
+      - main
+
+# 🚨 깃허브 액션즈에게 Node.js 24로 강제 실행하라고 명령 내리기!
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
+jobs:
+  Deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Github Repository 파일 불러오기
+        uses: actions/checkout@v5
+
+      - name: AWS Resource에 접근할 수 있게 AWS credentials 설정
+        uses: aws-actions/configure-aws-credentials@v5
+        with:
+          aws-region: ap-northeast-2
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+
+      - name: ECR에 로그인하기
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Create .env file
+        run: echo "${{ secrets.FASTAPI_ENV }}" > ./graphrag-service/.env
+
+      - name: Docker Image 생성
+        run: docker build -t nodingo-fastapi-server ./graphrag-service
+
+      - name: Docker Image에 Tag 생성
+        run: docker tag nodingo-fastapi-server ${{ steps.login-ecr.outputs.registry }}/nodingo-fastapi-server:latest
+
+      - name: ECR에 Docker Image Push
+        run: docker push ${{ steps.login-ecr.outputs.registry }}/nodingo-fastapi-server:latest
+
+      # CD 시작 (EC2 원격 접속 및 배포)
+      - name: SSH(원격)로 EC2에 접속하기
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ${{ secrets.EC2_USERNAME }}
+          key: ${{ secrets.EC2_PRIVATE_KEY }}
+          script_stop: true
+          script: |
+            aws ecr get-login-password --region ap-northeast-2 | docker login --username AWS --password-stdin ${{ steps.login-ecr.outputs.registry }} || true
+
+            docker stop nodingo-fastapi-server || true
+            docker rm nodingo-fastapi-server || true
+            
+            docker pull ${{ steps.login-ecr.outputs.registry }}/nodingo-fastapi-server:latest
+            
+            docker run -d --name nodingo-fastapi-server -p 8000:8000 ${{ steps.login-ecr.outputs.registry }}/nodingo-fastapi-server:latest
