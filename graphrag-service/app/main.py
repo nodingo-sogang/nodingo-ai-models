@@ -117,7 +117,6 @@ def summarize_recommend_keyword_endpoint(
         category=request.category,
     )
     return SummarizeRecommendKeywordResponse(
-        user_id=request.user_id,
         keyword_id=request.keyword.keyword_id,
         target_date=request.target_date,
         summary=summary,

@@ -237,7 +237,6 @@ class SummaryRelatedKeywordInput(BaseModel):
 class SummarizeRecommendKeywordRequest(BaseModel):
     """Request to generate a grounded recommendation summary."""
 
-    user_id: int
     keyword: SummaryKeywordInput
     related_news: list[SummaryNewsInput] = Field(default_factory=list)
     related_keywords: list[SummaryRelatedKeywordInput] = Field(default_factory=list)
@@ -249,7 +248,6 @@ class SummarizeRecommendKeywordRequest(BaseModel):
 class SummarizeRecommendKeywordResponse(BaseModel):
     """Response containing a user-facing keyword briefing summary."""
 
-    user_id: int
     keyword_id: int
     target_date: date
     summary: str
