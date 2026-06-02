@@ -4,19 +4,17 @@ on:
     branches:
       - main
 
-# 🚨 깃허브 액션즈에게 Node.js 24로 강제 실행하라고 명령 내리기!
-env:
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+# 🔥 문제의 원인이었던 Node 24 강제 환경변수(env) 삭제 완료
 
 jobs:
   Deploy:
     runs-on: ubuntu-latest
     steps:
       - name: Github Repository 파일 불러오기
-        uses: actions/checkout@v5
+        uses: actions/checkout@v4  # v5 -> v4 안정화 버전으로 변경
 
       - name: AWS Resource에 접근할 수 있게 AWS credentials 설정
-        uses: aws-actions/configure-aws-credentials@v5
+        uses: aws-actions/configure-aws-credentials@v4  # v5 -> v4 안정화 버전으로 변경
         with:
           aws-region: ap-northeast-2
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
@@ -47,11 +45,18 @@ jobs:
           key: ${{ secrets.EC2_PRIVATE_KEY }}
           script_stop: true
           script: |
+            # ECR 로그인
             aws ecr get-login-password --region ap-northeast-2 | docker login --username AWS --password-stdin ${{ steps.login-ecr.outputs.registry }} || true
 
+            # 기존 컨테이너 중지 및 삭제
             docker stop nodingo-fastapi-server || true
             docker rm nodingo-fastapi-server || true
             
+            # 최신 이미지 풀링
             docker pull ${{ steps.login-ecr.outputs.registry }}/nodingo-fastapi-server:latest
             
-            docker run -d --name nodingo-fastapi-server -p 8000:8000 ${{ steps.login-ecr.outputs.registry }}/nodingo-fastapi-server:latest
+            docker run -d \
+              --name nodingo-fastapi-server \
+              -p 8000:8000 \
+              --restart unless-stopped \
+              ${{ steps.login-ecr.outputs.registry }}/nodingo-fastapi-server:latest
