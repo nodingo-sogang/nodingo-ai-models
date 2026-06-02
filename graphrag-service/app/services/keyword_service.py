@@ -34,6 +34,12 @@ from app.utils.text_utils import clean_text, safe_join_title_body
 from app.utils.vector_utils import clip_score, cosine_similarity, zero_vector
 
 
+MIN_KEYWORDS_PER_NEWS = 5
+MIN_RELATIONS_PER_KEYWORD = 3
+MAX_RELATIONS_PER_KEYWORD = 8
+MIN_SIMILARITY_RELATION_SCORE = 0.35
+
+
 def generate_summary_with_llm(title: str, body: str) -> str:
     """OpenAI(gpt-4o-mini)를 이용해 뉴스 기사를 200자 이내로 요약합니다."""
     settings = get_settings()
@@ -144,18 +150,20 @@ def normalize_keyword(text: str) -> str:
 
 def extract_keywords_from_news(title: str, body: str, top_k: int) -> list[KeywordCandidate]:
     settings = get_settings()
+    target_count = max(MIN_KEYWORDS_PER_NEWS, min(max(top_k, 1), 15))
     if settings.use_openai_keyword_extraction and settings.openai_api_key and OpenAI is not None:
         try:
-            return extract_keywords_from_news_openai(title, body, top_k)
+            candidates = extract_keywords_from_news_openai(title, body, top_k)
+            if len(candidates) >= target_count:
+                return candidates[:top_k]
+            fallback = extract_keywords_from_news_fallback(title, body, target_count)
+            return merge_keyword_candidates(candidates, fallback, target_count)
         except Exception as e:
-            # 🔥 [수정] flush=True 로 버퍼링 무시하고 강제 출력!
-            print(f"\n🚨 [OpenAI 메인 로직 에러] 원인: {e}\n", flush=True)
+            print(f"\n[OpenAI keyword extraction error] {e}\n", flush=True)
             import traceback
             traceback.print_exc()
-            return extract_keywords_from_news_fallback(title, body, top_k)
-
-    print("\n⚠️ [경고] 설정 문제로 메인 로직을 타지 못하고 Fallback으로 빠졌습니다!\n", flush=True)
-    return extract_keywords_from_news_fallback(title, body, top_k)
+            return extract_keywords_from_news_fallback(title, body, target_count)
+    return extract_keywords_from_news_fallback(title, body, target_count)
 
 
 def extract_keywords_from_news_openai(title: str, body: str, top_k: int) -> list[KeywordCandidate]:
@@ -350,6 +358,28 @@ def extract_keywords_from_news_fallback(title: str, body: str, top_k: int) -> li
     return candidates
 
 
+def merge_keyword_candidates(
+    primary: list[KeywordCandidate],
+    supplemental: list[KeywordCandidate],
+    limit: int,
+) -> list[KeywordCandidate]:
+    """Merge keyword candidates by normalized_word while preserving primary ranking."""
+
+    merged: list[KeywordCandidate] = []
+    seen: set[str] = set()
+
+    for candidate in [*primary, *supplemental]:
+        normalized = normalize_keyword(candidate.normalized_word)
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        merged.append(candidate)
+        if len(merged) >= max(1, limit):
+            break
+
+    return merged
+
+
 def extract_keywords_from_news_keybert(title: str, body: str, top_k: int) -> list[KeywordCandidate]:
     """Legacy KeyBERT fallback keyword extraction."""
 
@@ -521,11 +551,12 @@ def build_keyword_relations(
     news_keyword_results: list[NewsAnalysisResult],
     target_date: date | None = None,
 ) -> list[KeywordRelationResult]:
-    """Build keyword relation candidates from keywords appearing in the same news."""
+    """Build keyword relations from co-occurrence and embedding similarity."""
 
     pair_evidence: dict[tuple[str, str], dict] = defaultdict(
         lambda: {"news_ids": set(), "weights": [], "recency_scores": [], "left": None, "right": None}
     )
+    keyword_stats = collect_keyword_stats(news_keyword_results, target_date)
 
     for news_result in news_keyword_results:
         recency_score = calculate_recency_score(news_result.published_at, target_date)
@@ -540,10 +571,14 @@ def build_keyword_relations(
             pair_evidence[key]["left"] = source
             pair_evidence[key]["right"] = target
 
+    add_similarity_relation_evidence(pair_evidence, keyword_stats)
+
     relations: list[KeywordRelationResult] = []
     for evidence in pair_evidence.values():
         left = evidence["left"]
         right = evidence["right"]
+        if left is None or right is None:
+            continue
         news_ids = sorted(evidence["news_ids"])
         avg_weight = sum(evidence["weights"]) / len(evidence["weights"])
         avg_recency_score = sum(evidence["recency_scores"]) / len(evidence["recency_scores"])
@@ -568,6 +603,117 @@ def build_keyword_relations(
     return sorted(
         relations,
         key=lambda item: (-item.relation_score, item.subject_normalized_word, item.related_normalized_word),
+    )
+
+
+def collect_keyword_stats(
+    news_keyword_results: list[NewsAnalysisResult],
+    target_date: date | None,
+) -> dict[str, dict]:
+    """Collect batch-level keyword metadata for similarity fallback relations."""
+
+    stats: dict[str, dict] = {}
+    for news_result in news_keyword_results:
+        recency_score = calculate_recency_score(news_result.published_at, target_date)
+        for keyword in news_result.keywords:
+            normalized = keyword.normalized_word
+            if not normalized:
+                continue
+            entry = stats.setdefault(
+                normalized,
+                {
+                    "keyword": keyword,
+                    "news_ids": set(),
+                    "weights": [],
+                    "recency_scores": [],
+                },
+            )
+            # Prefer an existing DB-backed keyword object if one appears later in the batch.
+            if entry["keyword"].keyword_id is None and keyword.keyword_id is not None:
+                entry["keyword"] = keyword
+            entry["news_ids"].add(news_result.news_id)
+            entry["weights"].append(keyword.weight)
+            entry["recency_scores"].append(recency_score)
+    return stats
+
+
+def add_similarity_relation_evidence(
+    pair_evidence: dict[tuple[str, str], dict],
+    keyword_stats: dict[str, dict],
+) -> None:
+    """Add embedding-similarity relation evidence for isolated keywords."""
+
+    relation_counts: dict[str, int] = defaultdict(int)
+    for left_norm, right_norm in pair_evidence:
+        relation_counts[left_norm] += 1
+        relation_counts[right_norm] += 1
+
+    keywords = [data["keyword"] for data in keyword_stats.values()]
+    if len(keywords) < 2:
+        return
+
+    for source in keywords:
+        source_norm = source.normalized_word
+        if not source_norm:
+            continue
+        if relation_counts[source_norm] >= MIN_RELATIONS_PER_KEYWORD:
+            continue
+
+        candidates: list[tuple[float, KeywordResult]] = []
+        for target in keywords:
+            target_norm = target.normalized_word
+            if not target_norm or source_norm == target_norm:
+                continue
+            ordered_source, ordered_target = _order_keyword_pair(source, target)
+            key = (ordered_source.normalized_word, ordered_target.normalized_word)
+            if key in pair_evidence:
+                continue
+
+            relation_score = calculate_similarity_relation_score(source, target)
+            if relation_score < MIN_SIMILARITY_RELATION_SCORE:
+                continue
+            candidates.append((relation_score, target))
+
+        candidates.sort(key=lambda item: (-item[0], item[1].normalized_word))
+        needed = min(
+            MAX_RELATIONS_PER_KEYWORD - relation_counts[source_norm],
+            max(0, MIN_RELATIONS_PER_KEYWORD - relation_counts[source_norm]),
+        )
+
+        for relation_score, target in candidates[:needed]:
+            left, right = _order_keyword_pair(source, target)
+            key = (left.normalized_word, right.normalized_word)
+            if key in pair_evidence:
+                continue
+
+            left_stats = keyword_stats.get(left.normalized_word, {})
+            right_stats = keyword_stats.get(right.normalized_word, {})
+            weights = [relation_score]
+            recency_scores = [
+                *left_stats.get("recency_scores", []),
+                *right_stats.get("recency_scores", []),
+            ] or [0.5]
+
+            pair_evidence[key]["weights"].extend(weights)
+            pair_evidence[key]["recency_scores"].extend(recency_scores)
+            pair_evidence[key]["left"] = left
+            pair_evidence[key]["right"] = right
+            relation_counts[left.normalized_word] += 1
+            relation_counts[right.normalized_word] += 1
+
+
+def calculate_similarity_relation_score(left: KeywordResult, right: KeywordResult) -> float:
+    """Score a relation candidate that did not necessarily co-occur in one news article."""
+
+    embedding_similarity = max(0.0, cosine_similarity(left.embedding, right.embedding))
+    avg_weight = ((left.weight or 0.0) + (right.weight or 0.0)) / 2.0
+    same_macro = 1.0 if left.macro and right.macro and left.macro == right.macro else 0.0
+    same_persona = 1.0 if left.personas and right.personas and left.personas == right.personas else 0.0
+    return clip_score(
+        0.55 * embedding_similarity
+        + 0.20 * avg_weight
+        + 0.15 * same_macro
+        + 0.10 * same_persona
     )
 
 
