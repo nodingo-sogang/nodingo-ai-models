@@ -1,5 +1,6 @@
 from fastapi import FastAPI, Request
-
+from prometheus_client import make_asgi_app, Counter, Histogram
+import time
 from app.config import get_settings
 from app.schemas import (
     AnalyzeNewsBatchRequest,
@@ -135,3 +136,40 @@ def generate_quizzes_endpoint(request: GenerateQuizzesRequest) -> GenerateQuizze
     """Generate news-grounded multiple-choice quizzes for one keyword."""
 
     return generate_quizzes(request)
+
+
+# 1. 메트릭 정의 (Grafana 및 Alert 규칙 이름과 매칭)
+REQUEST_COUNT = Counter('fastapi_request_count_total', 'Total request count', ['method', 'endpoint', 'status'])
+REQUEST_LATENCY = Histogram('fastapi_request_latency_seconds', 'Request latency', ['endpoint'])
+AI_CALL_COUNT = Counter('ai_call_total', 'Total AI API calls', ['endpoint'])
+
+# 🔥 아까 등록한 3번 알림 규칙 'ai_call_failure_total' 이름과 정확히 일치시켰습니다!
+AI_ERROR_COUNT = Counter('ai_call_failure_total', 'Total AI API errors', ['endpoint', 'error'])
+
+# 2. Prometheus 가 메트릭을 긁어갈 /metrics 엔드포인트 라우팅 등록
+metrics_app = make_asgi_app()
+app.mount("/metrics", metrics_app)
+
+
+# 3. HTTP 요청 및 응답 시간을 자동으로 측정하는 미들웨어
+@app.middleware("http")
+async def monitor_requests(request: Request, call_next):
+    # /metrics 경로 자체를 수집하면 로그가 더러워지므로 수집에서 제외합니다.
+    if request.url.path == "/metrics":
+        return await call_next(request)
+
+    start_time = time.time()
+    response = await call_next(request)
+    duration = time.time() - start_time
+
+    # HTTP 요청 수 및 응답 상태 코드 카운트 업
+    REQUEST_COUNT.labels(
+        method=request.method,
+        endpoint=request.url.path,
+        status=response.status_code
+    ).inc()
+
+    # API 응답 시간 측정
+    REQUEST_LATENCY.labels(endpoint=request.url.path).observe(duration)
+
+    return response
