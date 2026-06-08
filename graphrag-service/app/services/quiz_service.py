@@ -7,6 +7,8 @@ except ImportError:  # pragma: no cover - optional dependency fallback
 
 from app.config import get_settings
 from app.schemas import GenerateQuizzesRequest, GenerateQuizzesResponse, QuizInfo, QuizRelatedNewsInput
+from app.services.cache_service import get_cache_value, set_cache_values
+from app.services.fallback_service import log_openai_fallback, normalize_keyword_text, text_hash
 from app.utils.text_utils import clean_text, truncate_text
 
 
@@ -14,17 +16,37 @@ def generate_quizzes(request: GenerateQuizzesRequest) -> GenerateQuizzesResponse
     """Generate stable news-grounded quizzes for the backend batch pipeline."""
 
     settings = get_settings()
+    cache_keys = _quiz_cache_keys(request)
+    cache_path = getattr(settings, "quiz_cache_path", "test2/cache/quiz_cache.json")
+    cache_enabled = bool(getattr(settings, "enable_quiz_cache", False))
+    if cache_enabled:
+        cached = get_cache_value(cache_path, cache_keys)
+        cached_quizzes = _coerce_cached_quizzes(cached)
+        if cached_quizzes:
+            return GenerateQuizzesResponse(keyword_id=request.keyword_id, quizzes=cached_quizzes)
+
+    if getattr(settings, "openai_cost_saver_mode", False):
+        quizzes = generate_fallback_quizzes(request)
+        if cache_enabled:
+            _store_quiz_cache(cache_path, cache_keys, quizzes)
+        return GenerateQuizzesResponse(keyword_id=request.keyword_id, quizzes=quizzes)
+
     if settings.openai_api_key and OpenAI is not None:
         try:
             quizzes = generate_openai_quizzes(request)
             if quizzes:
+                if cache_enabled:
+                    _store_quiz_cache(cache_path, cache_keys, quizzes)
                 return GenerateQuizzesResponse(keyword_id=request.keyword_id, quizzes=quizzes)
-        except Exception:
-            pass
+        except Exception as exc:
+            log_openai_fallback(f"quiz generation failed, using template quiz: {exc}")
 
+    quizzes = generate_fallback_quizzes(request)
+    if cache_enabled:
+        _store_quiz_cache(cache_path, cache_keys, quizzes)
     return GenerateQuizzesResponse(
         keyword_id=request.keyword_id,
-        quizzes=generate_fallback_quizzes(request),
+        quizzes=quizzes,
     )
 
 
@@ -82,6 +104,37 @@ def generate_openai_quizzes(request: GenerateQuizzesRequest) -> list[QuizInfo]:
         quizzes.extend(generate_fallback_quizzes(request, start_index=len(quizzes)))
 
     return quizzes[:target_count]
+
+
+def _quiz_cache_keys(request: GenerateQuizzesRequest) -> list[str]:
+    normalized = normalize_keyword_text(request.word)
+    related_ids = ",".join(str(news.news_id) for news in request.related_news)
+    body_digest = text_hash(request.summary or "", *(news.body for news in request.related_news))
+    count = _target_count(request.num_questions)
+    return [
+        f"quiz:exact:{request.keyword_id}:{related_ids}:{body_digest}:{count}",
+        f"quiz:keyword:{request.keyword_id}:{count}",
+        f"quiz:word:{normalized}:{count}",
+    ]
+
+
+def _store_quiz_cache(path: str, keys: list[str], quizzes: list[QuizInfo]) -> None:
+    if not quizzes:
+        return
+    payload = [quiz.model_dump() for quiz in quizzes]
+    set_cache_values(path, {key: payload for key in keys})
+
+
+def _coerce_cached_quizzes(cached: object) -> list[QuizInfo]:
+    if not isinstance(cached, list):
+        return []
+    quizzes: list[QuizInfo] = []
+    for item in cached:
+        try:
+            quizzes.append(QuizInfo.model_validate(item))
+        except Exception:
+            continue
+    return quizzes
 
 
 def generate_fallback_quizzes(
@@ -198,7 +251,7 @@ def _format_news_evidence(related_news: list[QuizRelatedNewsInput]) -> str:
     lines = []
     for news in related_news[:5]:
         title = truncate_text(news.title, 150)
-        body = truncate_text(news.body, 850)
+        body = truncate_text(news.body, get_settings().max_openai_body_chars)
         url = news.url or ""
         lines.append(f"- news_id={news.news_id}, title={title}, url={url}, body={body}")
     return "\n".join(lines)
