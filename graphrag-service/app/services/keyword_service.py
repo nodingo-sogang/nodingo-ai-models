@@ -29,6 +29,15 @@ from app.services.embedding_service import (
     load_embedding_model,
     validate_embedding_dim,
 )
+from app.services.cache_service import get_cache_value, set_cache_values
+from app.services.fallback_service import (
+    DOMAIN_KEYWORDS,
+    deterministic_fake_embedding,
+    infer_persona_and_macro,
+    log_openai_fallback,
+    template_news_summary,
+    text_hash,
+)
 from app.services.relation_service import build_news_relations
 from app.utils.text_utils import clean_text, safe_join_title_body
 from app.utils.vector_utils import clip_score, cosine_similarity, zero_vector
@@ -67,15 +76,31 @@ def generate_summary_with_llm(title: str, body: str) -> str:
 
 def process_single_news(news, request) -> NewsAnalysisResult:
     """뉴스 1개를 처리하는 함수 (병렬 스레드에서 실행됨)"""
+    settings = get_settings()
+    cache_keys = _analysis_cache_keys(news)
+    cache_enabled = bool(getattr(settings, "enable_analysis_cache", False))
+    cache_path = getattr(settings, "analysis_cache_path", "test2/cache/news_analysis_cache.json")
+    if cache_enabled:
+        cached = get_cache_value(cache_path, cache_keys)
+        if isinstance(cached, dict):
+            try:
+                return NewsAnalysisResult.model_validate(cached)
+            except Exception:
+                pass
+
     try:
-        news_text = safe_join_title_body(news.title, news.body)
+        news_text = _analysis_text(news.title, news.body)
         news_embedding = get_news_embedding(news.news_id, news_text, news.embedding)
 
-        # 요약은 잘 나오니까 건너뜁니다
-        news_summary = generate_summary_with_llm(news.title, news.body)
+        if getattr(settings, "openai_cost_saver_mode", False):
+            news_summary = template_news_summary(news.title, news.body)
+        else:
+            news_summary = generate_summary_with_llm(news.title, news.body)
 
         # 🚨 여기서 키워드 추출 시도
-        candidates = extract_keywords_from_news(news.title, news.body, request.top_k_keywords)
+        candidates = extract_keywords_from_news(news.title, _limited_body(news.body), request.top_k_keywords)
+        if not candidates:
+            candidates = extract_keywords_from_news_rule_based(news.title, news.body, max(1, request.top_k_keywords))
 
         # 🔥 [DEBUG] 추출된 후보군이 진짜 들어오는지 확인
         print(f"DEBUG: NewsID {news.news_id} / 후보군 수: {len(candidates)}", file=sys.stderr, flush=True)
@@ -92,13 +117,16 @@ def process_single_news(news, request) -> NewsAnalysisResult:
                 keyword.model_copy(update={"weight": weight, "evidence_text": keyword.evidence_text})
             )
 
-        return NewsAnalysisResult(
+        result = NewsAnalysisResult(
             news_id=news.news_id,
             published_at=news.published_at,
             embedding=news_embedding,
             summary=news_summary,
             keywords=weighted_keywords,
         )
+        if cache_enabled:
+            _store_analysis_cache(cache_path, cache_keys, result)
+        return result
 
     except Exception as e:
         # 🔥 [강제 출력] 에러가 나면 여기서 무조건 터미널에 찍힙니다!
@@ -106,13 +134,50 @@ def process_single_news(news, request) -> NewsAnalysisResult:
         print(f"\n🚨 [CRITICAL ERROR] NewsID {news.news_id} 처리 중 사망:", file=sys.stderr, flush=True)
         traceback.print_exc(file=sys.stderr)
 
-        # 에러가 나도 배치가 멈추지 않게 빈 결과 반환
-        return NewsAnalysisResult(
+        log_openai_fallback(f"news analysis failed, using rule-based result: news_id={news.news_id}, error={e}")
+        result = _fallback_news_analysis(news, request)
+        if cache_enabled:
+            _store_analysis_cache(cache_path, cache_keys, result)
+        return result
+
+
+def _fallback_news_analysis(news, request) -> NewsAnalysisResult:
+    settings = get_settings()
+    text = _analysis_text(news.title, news.body)
+    news_embedding = deterministic_fake_embedding(text, settings.embedding_dim)
+    candidates = extract_keywords_from_news_rule_based(news.title, news.body, max(1, request.top_k_keywords))
+    keywords = resolve_keywords(candidates, request.existing_keywords)
+    weighted_keywords = []
+    for keyword in keywords:
+        weight = calculate_news_keyword_weight(
+            news.title, news.body, keyword.normalized_word, keyword.extraction_score, news_embedding, keyword.embedding
+        )
+        weighted_keywords.append(keyword.model_copy(update={"weight": weight}))
+    if not weighted_keywords:
+        fallback_word = clean_text(news.title).split(" ")[0] if clean_text(news.title) else "뉴스"
+        persona, macro = infer_persona_and_macro(fallback_word)
+        embedding = deterministic_fake_embedding(fallback_word, settings.embedding_dim)
+        weighted_keywords.append(
+            KeywordResult(
+                keyword_id=None,
+                word=fallback_word,
+                normalized_word=normalize_keyword(fallback_word),
+                embedding=embedding,
+                weight=0.5,
+                is_new=True,
+                aliases=build_keyword_aliases(fallback_word, normalize_keyword(fallback_word)),
+                extraction_score=0.5,
+                evidence_text=clean_text(news.title) or None,
+                personas=persona,
+                macro=macro,
+            )
+        )
+    return NewsAnalysisResult(
             news_id=news.news_id,
             published_at=news.published_at,
-            embedding=[],
-            summary="분석 실패",
-            keywords=[]
+            embedding=news_embedding,
+            summary=template_news_summary(news.title, news.body),
+            keywords=weighted_keywords,
         )
 
 def analyze_news_batch(request: AnalyzeNewsBatchRequest) -> AnalyzeNewsBatchResponse:
@@ -121,10 +186,17 @@ def analyze_news_batch(request: AnalyzeNewsBatchRequest) -> AnalyzeNewsBatchResp
     for existing in request.existing_keywords:
         validate_embedding_dim(existing.embedding)
 
-    # 구형 for문 삭제하고, ThreadPoolExecutor로 30개 사용
-    with concurrent.futures.ThreadPoolExecutor(max_workers=30) as executor:
-        # request.news 리스트를 process_single_news에 매핑하여 병렬 실행 후 리스트로 묶음
-        news_results = list(executor.map(lambda n: process_single_news(n, request), request.news))
+    settings = get_settings()
+    chunk_size = max(1, int(getattr(settings, "analyze_batch_chunk_size", 30)))
+    news_results: list[NewsAnalysisResult] = []
+    for start in range(0, len(request.news), chunk_size):
+        chunk = request.news[start : start + chunk_size]
+        if getattr(settings, "openai_cost_saver_mode", False):
+            chunk_results = [process_single_news(news, request) for news in chunk]
+        else:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=min(30, len(chunk))) as executor:
+                chunk_results = list(executor.map(lambda n: process_single_news(n, request), chunk))
+        news_results.extend(chunk_results)
 
     for res in news_results:
         for kw in res.keywords:
@@ -148,9 +220,45 @@ def normalize_keyword(text: str) -> str:
     return re.sub(r"\s+", " ", value).strip()
 
 
+def _limited_body(body: str) -> str:
+    settings = get_settings()
+    limit = max(1, int(getattr(settings, "max_openai_body_chars", 1000)))
+    return clean_text(body)[:limit]
+
+
+def _analysis_text(title: str, body: str) -> str:
+    return safe_join_title_body(title, _limited_body(body))
+
+
+def _analysis_cache_keys(news) -> list[str]:
+    body_digest = text_hash(news.title, news.body)
+    return [
+        f"analysis:exact:{news.news_id}:{body_digest}",
+    ]
+
+
+def _store_analysis_cache(path: str, keys: list[str], result: NewsAnalysisResult) -> None:
+    set_cache_values(path, {key: result.model_dump(mode="json") for key in keys})
+
+
+def truncate_evidence(title: str, body: str, word: str) -> str | None:
+    text = safe_join_title_body(title, body)
+    normalized = clean_text(word)
+    if not text:
+        return None
+    index = text.lower().find(normalized.lower()) if normalized else -1
+    if index < 0:
+        return clean_text(title) or None
+    start = max(0, index - 45)
+    end = min(len(text), index + len(normalized) + 45)
+    return clean_text(text[start:end])
+
+
 def extract_keywords_from_news(title: str, body: str, top_k: int) -> list[KeywordCandidate]:
     settings = get_settings()
     target_count = max(MIN_KEYWORDS_PER_NEWS, min(max(top_k, 1), 15))
+    if getattr(settings, "openai_cost_saver_mode", False):
+        return extract_keywords_from_news_rule_based(title, body, target_count)
     if settings.use_openai_keyword_extraction and settings.openai_api_key and OpenAI is not None:
         try:
             candidates = extract_keywords_from_news_openai(title, body, top_k)
@@ -164,6 +272,53 @@ def extract_keywords_from_news(title: str, body: str, top_k: int) -> list[Keywor
             traceback.print_exc()
             return extract_keywords_from_news_fallback(title, body, target_count)
     return extract_keywords_from_news_fallback(title, body, target_count)
+
+
+def extract_keywords_from_news_rule_based(title: str, body: str, top_k: int) -> list[KeywordCandidate]:
+    """Cheap dictionary and frequency based fallback that never returns an empty list."""
+
+    text = safe_join_title_body(title, body)
+    lower_text = text.lower()
+    title_lower = clean_text(title).lower()
+    scored: dict[str, tuple[float, str, str]] = {}
+
+    for persona, (macro, terms) in DOMAIN_KEYWORDS.items():
+        for term in terms:
+            term_lower = term.lower()
+            body_count = lower_text.count(term_lower)
+            title_bonus = 2 if term_lower in title_lower else 0
+            count = body_count + title_bonus
+            if count <= 0:
+                continue
+            score = clip_score(0.35 + min(0.55, count * 0.12))
+            scored[term] = (max(score, scored.get(term, (0.0, persona, macro))[0]), persona, macro)
+
+    frequency_candidates = extract_keywords_from_news_frequency(title, body, max(top_k, MIN_KEYWORDS_PER_NEWS))
+    for candidate in frequency_candidates:
+        persona, macro = infer_persona_and_macro(candidate.word)
+        base = float(candidate.extraction_score or 0.4)
+        if candidate.word not in scored:
+            scored[candidate.word] = (clip_score(base), persona, macro)
+
+    if not scored:
+        fallback = clean_text(title).split(" ")[0] if clean_text(title) else "뉴스"
+        persona, macro = infer_persona_and_macro(fallback)
+        scored[fallback] = (0.5, persona, macro)
+
+    ranked = sorted(scored.items(), key=lambda item: (-item[1][0], item[0]))[: max(1, top_k)]
+    return [
+        KeywordCandidate(
+            word=word,
+            normalized_word=normalize_keyword(word),
+            extraction_score=score,
+            weight=score,
+            evidence_text=truncate_evidence(title, body, word),
+            personas=persona,
+            macro=macro,
+        )
+        for word, (score, persona, macro) in ranked
+        if normalize_keyword(word)
+    ]
 
 
 def extract_keywords_from_news_openai(title: str, body: str, top_k: int) -> list[KeywordCandidate]:
@@ -334,6 +489,13 @@ def extract_keywords_from_news_fallback(title: str, body: str, top_k: int) -> li
 
     # [BUG FIX 3] Post-process fallback candidates: attach personas/macro via OpenAI
     settings = get_settings()
+    if getattr(settings, "openai_cost_saver_mode", False):
+        for candidate in candidates:
+            persona, macro = infer_persona_and_macro(candidate.word)
+            candidate.personas = persona
+            candidate.macro = macro
+        return candidates
+
     if settings.openai_api_key and OpenAI is not None and candidates:
         try:
             words = [c.word for c in candidates]
@@ -494,8 +656,12 @@ def embed_keyword(normalized_word: str) -> list[float]:
 
     try:
         return embed_text_openai(normalized_word, cache_key=f"keyword:{normalized_word}")
-    except Exception:
-        return zero_vector(get_settings().embedding_dim)
+    except Exception as exc:
+        settings = get_settings()
+        if not getattr(settings, "openai_fallback_on_error", True):
+            raise
+        log_openai_fallback(f"keyword embedding failed, using fake embedding: {exc}")
+        return deterministic_fake_embedding(normalized_word, settings.embedding_dim)
 
 
 def calculate_news_keyword_weight(

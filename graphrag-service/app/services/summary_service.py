@@ -5,6 +5,13 @@ except ImportError:  # pragma: no cover - optional dependency fallback
 
 from app.config import get_settings
 from app.schemas import SummaryKeywordInput, SummaryNewsInput, SummaryRelatedKeywordInput
+from app.services.cache_service import get_cache_value, set_cache_values
+from app.services.fallback_service import (
+    log_openai_fallback,
+    normalize_keyword_text,
+    template_summary_for_keyword,
+    text_hash,
+)
 from app.utils.text_utils import clean_text, truncate_text
 
 
@@ -18,12 +25,36 @@ def generate_recommend_keyword_summary(
     """Generate a grounded keyword summary with OpenAI when configured, otherwise fallback."""
 
     settings = get_settings()
+    cache_keys = _summary_cache_keys(keyword, related_news, persona, category)
+    cache_path = getattr(settings, "summary_cache_path", "test2/cache/summary_cache.json")
+    cache_enabled = bool(getattr(settings, "enable_summary_cache", False))
+    if cache_enabled:
+        cached = get_cache_value(cache_path, cache_keys)
+        if isinstance(cached, str) and cached.strip():
+            return cached
+
+    if getattr(settings, "openai_cost_saver_mode", False):
+        summary = generate_fallback_summary(keyword, related_news, related_keywords, persona, category)
+        if cache_enabled:
+            _store_summary_cache(cache_path, cache_keys, summary)
+        return summary
+
     if settings.openai_api_key and settings.use_openai_summary:
         try:
-            return generate_openai_summary(keyword, related_news, related_keywords, persona, category)
-        except Exception:
-            return generate_fallback_summary(keyword, related_news, related_keywords, persona, category)
-    return generate_fallback_summary(keyword, related_news, related_keywords, persona, category)
+            summary = generate_openai_summary(keyword, related_news, related_keywords, persona, category)
+            if cache_enabled:
+                _store_summary_cache(cache_path, cache_keys, summary)
+            return summary
+        except Exception as exc:
+            log_openai_fallback(f"summary failed, using template summary: {exc}")
+            summary = generate_fallback_summary(keyword, related_news, related_keywords, persona, category)
+            if cache_enabled:
+                _store_summary_cache(cache_path, cache_keys, summary)
+            return summary
+    summary = generate_fallback_summary(keyword, related_news, related_keywords, persona, category)
+    if cache_enabled:
+        _store_summary_cache(cache_path, cache_keys, summary)
+    return summary
 
 
 def generate_openai_summary(
@@ -80,7 +111,7 @@ def generate_fallback_summary(
     related_words = [item.word for item in related_keywords[:3]]
 
     if not related_news:
-        return f"{keyword_word}은(는) 최근 추천 후보로 분류된 키워드입니다. 제공된 관련 기사가 없어 추가 근거 요약은 생성하지 않았습니다."
+        return template_summary_for_keyword(keyword_word, related_keywords=related_words, category=category)
 
     first_title = titles[0] if titles else f"{keyword_word} 관련 기사"
     related_part = f" 함께 언급된 키워드는 {', '.join(related_words)}입니다." if related_words else ""
@@ -91,6 +122,29 @@ def generate_fallback_summary(
     )
 
 
+def _summary_cache_keys(
+    keyword: SummaryKeywordInput,
+    related_news: list[SummaryNewsInput],
+    persona: str | None,
+    category: str | None,
+) -> list[str]:
+    normalized = normalize_keyword_text(keyword.word)
+    related_ids = ",".join(str(news.news_id) for news in related_news)
+    body_digest = text_hash(*(news.body for news in related_news))
+    return [
+        f"summary:exact:{keyword.keyword_id}:{related_ids}:{body_digest}:{persona or ''}:{category or ''}",
+        f"summary:keyword_date:{keyword.keyword_id}:{body_digest}",
+        f"summary:keyword:{keyword.keyword_id}",
+        f"summary:word:{normalized}",
+    ]
+
+
+def _store_summary_cache(path: str, keys: list[str], summary: str) -> None:
+    if not summary.strip():
+        return
+    set_cache_values(path, {key: summary for key in keys})
+
+
 def _format_news_evidence(related_news: list[SummaryNewsInput]) -> str:
     """Format news evidence compactly for the LLM prompt."""
 
@@ -99,7 +153,7 @@ def _format_news_evidence(related_news: list[SummaryNewsInput]) -> str:
     lines = []
     for news in related_news[:5]:
         title = truncate_text(news.title, 160)
-        body = truncate_text(news.body, 700)
+        body = truncate_text(news.body, get_settings().max_openai_body_chars)
         lines.append(f"- news_id={news.news_id}, title={title}, body={body}")
     return "\n".join(lines)
 
