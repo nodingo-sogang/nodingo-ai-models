@@ -45,8 +45,7 @@ jobs:
           script: |
             # ECR 로그인
             aws ecr get-login-password --region ap-northeast-2 | docker login --username AWS --password-stdin ${{ steps.login-ecr.outputs.registry }} || true
-
-            -- 이하는 데이터 싱크 에러 해결을 위한 초기화 및 타임아웃 보강 라인업 --
+            
             # 기존 컨테이너 중지 및 삭제
             docker stop nodingo-fastapi-server || true
             docker rm nodingo-fastapi-server || true
@@ -54,7 +53,7 @@ jobs:
             # 최신 이미지 풀링
             docker pull ${{ steps.login-ecr.outputs.registry }}/nodingo-fastapi-server:latest
             
-            # 🌟 [수정] 대용량 GraphRAG 및 GPT 연산 병목을 뚫기 위해 uvicorn 타임아웃 인자(5분)를 강제 주입하여 실행!
+            # uvicorn 타임아웃 인자(5분)를 주입하여 실행
             docker run -d \
               --name nodingo-fastapi-server \
               -p 8000:8000 \
