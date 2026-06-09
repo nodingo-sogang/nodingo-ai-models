@@ -23,6 +23,114 @@ DOMAIN_KEYWORDS: dict[str, tuple[str, tuple[str, ...]]] = {
     "INTERNATIONAL": ("국제", ("미국", "중국", "일본", "유럽", "러시아", "우크라이나", "외교", "관세", "무역")),
 }
 
+MACRO_KEYWORDS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
+    (
+        "POLITICS",
+        "선거",
+        ("대선", "총선", "지방선거", "선거", "공약", "후보", "유권자", "투표", "경선"),
+    ),
+    (
+        "POLITICS",
+        "입법",
+        ("국회", "법안", "상임위", "본회의", "의원", "여야", "정당", "개정안", "청문회"),
+    ),
+    (
+        "POLITICS",
+        "정부정책",
+        ("정부", "정책", "대통령", "장관", "국정", "예산", "규제", "개혁", "행정"),
+    ),
+    (
+        "ECONOMY",
+        "금융",
+        ("금리", "기준금리", "환율", "은행", "대출", "채권", "증권", "주식", "코스피", "코스닥"),
+    ),
+    (
+        "ECONOMY",
+        "물가",
+        ("물가", "인플레이션", "소비자물가", "가격", "원자재", "유가", "생활비"),
+    ),
+    (
+        "ECONOMY",
+        "부동산",
+        ("부동산", "아파트", "전세", "전세사기", "주택", "분양", "임대", "집값"),
+    ),
+    (
+        "ECONOMY",
+        "산업",
+        ("기업", "실적", "수출", "무역", "투자", "제조", "공급망", "매출", "시장"),
+    ),
+    (
+        "TECHNOLOGY",
+        "AI",
+        ("AI", "인공지능", "챗GPT", "생성형", "모델", "데이터센터", "GPU", "엔비디아"),
+    ),
+    (
+        "TECHNOLOGY",
+        "반도체",
+        ("반도체", "HBM", "메모리", "파운드리", "삼성전자", "SK하이닉스", "칩", "양산"),
+    ),
+    (
+        "TECHNOLOGY",
+        "모빌리티",
+        ("배터리", "전기차", "자율주행", "로봇", "자동차", "충전", "모빌리티"),
+    ),
+    (
+        "TECHNOLOGY",
+        "플랫폼",
+        ("플랫폼", "클라우드", "데이터", "보안", "블록체인", "소프트웨어", "서비스"),
+    ),
+    (
+        "SOCIETY",
+        "의료",
+        ("의료", "병원", "의대", "의사", "환자", "간호", "건강", "백신"),
+    ),
+    (
+        "SOCIETY",
+        "교육",
+        ("교육", "입시", "학교", "대학", "수능", "교사", "학생", "학원"),
+    ),
+    (
+        "SOCIETY",
+        "노동복지",
+        ("노동", "고용", "임금", "복지", "저출생", "인구", "연금", "일자리"),
+    ),
+    (
+        "SOCIETY",
+        "사건사고",
+        ("안전", "범죄", "경찰", "검찰", "법원", "사고", "재난", "수사"),
+    ),
+    (
+        "CULTURE",
+        "콘텐츠",
+        ("영화", "드라마", "음악", "웹툰", "게임", "콘텐츠", "OTT", "K팝", "아이돌"),
+    ),
+    (
+        "CULTURE",
+        "공연전시",
+        ("공연", "전시", "축제", "미술", "박물관", "콘서트", "뮤지컬"),
+    ),
+    (
+        "CULTURE",
+        "여가",
+        ("여행", "관광", "스포츠", "야구", "축구", "농구", "올림픽", "월드컵"),
+    ),
+    (
+        "INTERNATIONAL",
+        "미국",
+        ("미국", "워싱턴", "연준", "트럼프", "바이든", "뉴욕", "나스닥"),
+    ),
+    (
+        "INTERNATIONAL",
+        "중국",
+        ("중국", "베이징", "시진핑", "홍콩", "대만", "위안", "알리바바"),
+    ),
+    (
+        "INTERNATIONAL",
+        "외교안보",
+        ("일본", "유럽", "러시아", "우크라이나", "중동", "외교", "관세", "무역분쟁", "정상회담"),
+    ),
+)
+
 SUMMARY_TEMPLATES = {
     "금리": "금리는 돈을 빌릴 때 붙는 비용으로, 물가, 환율, 부동산, 가계부채와 강하게 연결됩니다.",
     "기준금리": "기준금리는 중앙은행이 정하는 대표 금리로, 시장 금리와 대출 이자에 영향을 줍니다.",
@@ -66,10 +174,15 @@ def deterministic_fake_embedding(text: str, dim: int) -> list[float]:
 
 def infer_persona_and_macro(text: str) -> tuple[str, str]:
     normalized = normalize_keyword_text(text).upper()
+    for persona, macro, terms in MACRO_KEYWORDS:
+        if any(term.upper() in normalized for term in terms):
+            return persona, macro
     for persona, (macro, terms) in DOMAIN_KEYWORDS.items():
         if any(term.upper() in normalized for term in terms):
             return persona, macro
-    return "ECONOMY", "기타"
+    if re.search(r"[A-Za-z]", normalized):
+        return "TECHNOLOGY", "플랫폼"
+    return "SOCIETY", "일반"
 
 
 def template_summary_for_keyword(

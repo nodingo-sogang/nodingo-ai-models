@@ -32,6 +32,7 @@ from app.services.embedding_service import (
 from app.services.cache_service import get_cache_value, set_cache_values
 from app.services.fallback_service import (
     DOMAIN_KEYWORDS,
+    MACRO_KEYWORDS,
     deterministic_fake_embedding,
     infer_persona_and_macro,
     log_openai_fallback,
@@ -47,6 +48,7 @@ MIN_KEYWORDS_PER_NEWS = 5
 MIN_RELATIONS_PER_KEYWORD = 3
 MAX_RELATIONS_PER_KEYWORD = 8
 MIN_SIMILARITY_RELATION_SCORE = 0.35
+ANALYSIS_CACHE_VERSION = "macro-diversity-v2"
 
 
 def generate_summary_with_llm(title: str, body: str) -> str:
@@ -233,7 +235,7 @@ def _analysis_text(title: str, body: str) -> str:
 def _analysis_cache_keys(news) -> list[str]:
     body_digest = text_hash(news.title, news.body)
     return [
-        f"analysis:exact:{news.news_id}:{body_digest}",
+        f"analysis:{ANALYSIS_CACHE_VERSION}:exact:{news.news_id}:{body_digest}",
     ]
 
 
@@ -263,7 +265,10 @@ def extract_keywords_from_news(title: str, body: str, top_k: int) -> list[Keywor
         try:
             candidates = extract_keywords_from_news_openai(title, body, top_k)
             if len(candidates) >= target_count:
-                return candidates[:top_k]
+                return select_macro_diverse_candidates(
+                    [fill_candidate_category(candidate) for candidate in candidates],
+                    max(1, top_k),
+                )
             fallback = extract_keywords_from_news_fallback(title, body, target_count)
             return merge_keyword_candidates(candidates, fallback, target_count)
         except Exception as e:
@@ -282,7 +287,7 @@ def extract_keywords_from_news_rule_based(title: str, body: str, top_k: int) -> 
     title_lower = clean_text(title).lower()
     scored: dict[str, tuple[float, str, str]] = {}
 
-    for persona, (macro, terms) in DOMAIN_KEYWORDS.items():
+    for persona, macro, terms in MACRO_KEYWORDS:
         for term in terms:
             term_lower = term.lower()
             body_count = lower_text.count(term_lower)
@@ -292,6 +297,20 @@ def extract_keywords_from_news_rule_based(title: str, body: str, top_k: int) -> 
                 continue
             score = clip_score(0.35 + min(0.55, count * 0.12))
             scored[term] = (max(score, scored.get(term, (0.0, persona, macro))[0]), persona, macro)
+
+    for persona, (macro, terms) in DOMAIN_KEYWORDS.items():
+        for term in terms:
+            if term in scored:
+                continue
+            term_lower = term.lower()
+            body_count = lower_text.count(term_lower)
+            title_bonus = 2 if term_lower in title_lower else 0
+            count = body_count + title_bonus
+            if count <= 0:
+                continue
+            inferred_persona, inferred_macro = infer_persona_and_macro(term)
+            score = clip_score(0.30 + min(0.45, count * 0.10))
+            scored[term] = (score, inferred_persona or persona, inferred_macro or macro)
 
     frequency_candidates = extract_keywords_from_news_frequency(title, body, max(top_k, MIN_KEYWORDS_PER_NEWS))
     for candidate in frequency_candidates:
@@ -305,7 +324,7 @@ def extract_keywords_from_news_rule_based(title: str, body: str, top_k: int) -> 
         persona, macro = infer_persona_and_macro(fallback)
         scored[fallback] = (0.5, persona, macro)
 
-    ranked = sorted(scored.items(), key=lambda item: (-item[1][0], item[0]))[: max(1, top_k)]
+    ranked = select_macro_diverse_items(scored, max(1, top_k))
     return [
         KeywordCandidate(
             word=word,
@@ -491,10 +510,8 @@ def extract_keywords_from_news_fallback(title: str, body: str, top_k: int) -> li
     settings = get_settings()
     if getattr(settings, "openai_cost_saver_mode", False):
         for candidate in candidates:
-            persona, macro = infer_persona_and_macro(candidate.word)
-            candidate.personas = persona
-            candidate.macro = macro
-        return candidates
+            fill_candidate_category(candidate)
+        return select_macro_diverse_candidates(candidates, max(1, top_k))
 
     if settings.openai_api_key and OpenAI is not None and candidates:
         try:
@@ -504,7 +521,8 @@ def extract_keywords_from_news_fallback(title: str, body: str, top_k: int) -> li
                 cls = classifications.get(candidate.word, {})
                 candidate.personas = cls.get("personas", "ECONOMY")
                 candidate.macro = cls.get("macro", "기타")
-            return candidates
+                fill_candidate_category(candidate)
+            return select_macro_diverse_candidates(candidates, max(1, top_k))
         except Exception as e:
             # 🔥 [수정] 여기서 에러를 삼키고(pass) 있었습니다!! 무조건 출력하게 변경!
             print(f"\n🚨 [Fallback OpenAI 분류 실패] 원인: {e}\n", flush=True)
@@ -513,11 +531,8 @@ def extract_keywords_from_news_fallback(title: str, body: str, top_k: int) -> li
             pass
     # [BUG FIX 3] Default when OpenAI unavailable or failed
     for candidate in candidates:
-        if candidate.personas is None:
-            candidate.personas = "ECONOMY"
-        if candidate.macro is None:
-            candidate.macro = "기타"
-    return candidates
+        fill_candidate_category(candidate)
+    return select_macro_diverse_candidates(candidates, max(1, top_k))
 
 
 def merge_keyword_candidates(
@@ -535,11 +550,100 @@ def merge_keyword_candidates(
         if not normalized or normalized in seen:
             continue
         seen.add(normalized)
+        fill_candidate_category(candidate)
         merged.append(candidate)
-        if len(merged) >= max(1, limit):
+
+    return select_macro_diverse_candidates(merged, max(1, limit))
+
+
+def fill_candidate_category(candidate: KeywordCandidate) -> KeywordCandidate:
+    """Ensure persona/macro fields are always non-empty and not stuck on generic fallback."""
+
+    inferred_persona, inferred_macro = infer_persona_and_macro(candidate.word)
+    personas = clean_text(candidate.personas or "").upper()
+    macro = clean_text(candidate.macro or "")
+    if not personas:
+        candidate.personas = inferred_persona
+    if not macro or macro == "기타":
+        candidate.personas = inferred_persona
+        candidate.macro = inferred_macro
+    return candidate
+
+
+def select_macro_diverse_items(
+    scored: dict[str, tuple[float, str, str]],
+    limit: int,
+) -> list[tuple[str, tuple[float, str, str]]]:
+    """Select high-scoring items while preserving distinct macro values where possible."""
+
+    ranked = sorted(scored.items(), key=lambda item: (-item[1][0], item[1][2], item[0]))
+    selected: list[tuple[str, tuple[float, str, str]]] = []
+    seen_words: set[str] = set()
+    seen_macros: set[str] = set()
+    target_macro_count = min(6, max(1, limit))
+
+    for item in ranked:
+        word, (_, _, macro) = item
+        if word in seen_words or macro in seen_macros:
+            continue
+        selected.append(item)
+        seen_words.add(word)
+        seen_macros.add(macro)
+        if len(selected) >= target_macro_count or len(selected) >= limit:
             break
 
-    return merged
+    for item in ranked:
+        word = item[0]
+        if word in seen_words:
+            continue
+        selected.append(item)
+        seen_words.add(word)
+        if len(selected) >= limit:
+            break
+
+    return selected[:limit]
+
+
+def select_macro_diverse_candidates(
+    candidates: list[KeywordCandidate],
+    limit: int,
+) -> list[KeywordCandidate]:
+    """Select candidate objects with macro diversity before filling remaining slots."""
+
+    ranked = sorted(
+        candidates,
+        key=lambda candidate: (
+            -float(candidate.extraction_score or candidate.weight or 0.0),
+            candidate.macro or "",
+            candidate.normalized_word,
+        ),
+    )
+    selected: list[KeywordCandidate] = []
+    seen_normalized: set[str] = set()
+    seen_macros: set[str] = set()
+    target_macro_count = min(6, max(1, limit))
+
+    for candidate in ranked:
+        normalized = normalize_keyword(candidate.normalized_word)
+        macro = clean_text(candidate.macro or "")
+        if not normalized or normalized in seen_normalized or macro in seen_macros:
+            continue
+        selected.append(candidate)
+        seen_normalized.add(normalized)
+        seen_macros.add(macro)
+        if len(selected) >= target_macro_count or len(selected) >= limit:
+            break
+
+    for candidate in ranked:
+        normalized = normalize_keyword(candidate.normalized_word)
+        if not normalized or normalized in seen_normalized:
+            continue
+        selected.append(candidate)
+        seen_normalized.add(normalized)
+        if len(selected) >= limit:
+            break
+
+    return selected[:limit]
 
 
 def extract_keywords_from_news_keybert(title: str, body: str, top_k: int) -> list[KeywordCandidate]:
